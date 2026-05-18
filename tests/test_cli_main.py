@@ -2,6 +2,7 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 main_module = importlib.import_module("cli.main")
 
@@ -102,3 +103,14 @@ async def test_download_url_passes_proxy_to_api_client(monkeypatch, tmp_path):
     assert result is not None
     assert result.success == 1
     assert captured["proxy"] == "http://127.0.0.1:8899"
+
+
+def test_remember_organize_run_persists_to_yaml(tmp_path):
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("analysis:\n  organize_run_id: ''\n", encoding="utf-8")
+    config = main_module.ConfigLoader(str(config_path))
+
+    main_module._remember_organize_run(config, "run-123")
+
+    written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert written["analysis"]["organize_run_id"] == "run-123"

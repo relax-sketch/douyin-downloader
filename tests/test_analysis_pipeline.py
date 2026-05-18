@@ -306,6 +306,219 @@ async def test_pipeline_batch_mode_uses_five_video_prompt_contract(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_organize_can_copy_only_configured_score_buckets(tmp_path):
+    downloads_root = tmp_path / "Downloaded"
+    config = ConfigLoader()
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text(
+        "ids={video_id_1},{video_id_2},{video_id_3},{video_id_4},{video_id_5}",
+        encoding="utf-8",
+    )
+    config.update(
+        path=str(downloads_root),
+        analysis={
+            **config.get("analysis"),
+            "output_dir": str(tmp_path / "Analysis"),
+            "classified_dir": str(tmp_path / "Classified"),
+            "prompt_file": str(prompt_file),
+            "batch_size": 5,
+            "attributes": [
+                {
+                    "key": "suggestiveness_score",
+                    "label": "性暗示程度",
+                    "description": "desc",
+                    "min_score": 1,
+                    "max_score": 10,
+                },
+                {
+                    "key": "coverage_score",
+                    "label": "覆盖程度",
+                    "description": "desc",
+                    "min_score": 1,
+                    "max_score": 10,
+                },
+            ],
+            "primary_attribute": "suggestiveness_score",
+            "buckets": [
+                {"label": "低", "min_score": 1, "max_score": 3},
+                {"label": "4", "min_score": 4, "max_score": 4},
+                {"label": "5", "min_score": 5, "max_score": 5},
+                {"label": "6", "min_score": 6, "max_score": 6},
+                {"label": "7+", "min_score": 7, "max_score": 10},
+            ],
+            "organize_buckets": [
+                {"label": "4", "min_score": 4, "max_score": 4},
+                {"label": "5", "min_score": 5, "max_score": 5},
+                {"label": "6", "min_score": 6, "max_score": 6},
+                {"label": "7+", "min_score": 7, "max_score": 10},
+            ],
+        },
+    )
+
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    for index in range(5):
+        video_dir = downloads_root / "author" / "post" / f"demo-{index}"
+        video_dir.mkdir(parents=True)
+        (video_dir / f"demo-{index}.mp4").write_bytes(b"video")
+        await database.add_aweme(
+            {
+                "aweme_id": str(index),
+                "aweme_type": "video",
+                "title": f"demo-{index}",
+                "author_id": "author",
+                "author_name": "Author",
+                "create_time": 1700000000 + index,
+                "file_path": str(video_dir),
+                "metadata": "{}",
+            }
+        )
+
+    pipeline = AnalysisPipeline(
+        raw_config=config.config,
+        database=database,
+        file_manager=FileManager(str(downloads_root)),
+        provider=_FakeBatchProvider(),
+        frame_extractor=_FakeFrameExtractor(),
+        grid_builder=_FakeGridBuilder(),
+    )
+    run_id = await pipeline.create_run(source_type="all", source_payload={"scope": "all"})
+    assert await pipeline.prepare_from_all_videos(run_id=run_id) == 5
+    await pipeline.resume(run_id)
+
+    classified = sorted(path.parent.name for path in (tmp_path / "Classified").rglob("*.mp4"))
+    assert classified == ["性暗示程度_4", "性暗示程度_5"]
+    rows = await database.get_analysis_export_rows(run_id)
+    assert [row["organize_status"] for row in rows] == [
+        "skipped",
+        "skipped",
+        "skipped",
+        "success",
+        "success",
+    ]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_organize_rebuild_removes_old_copies_and_reclassifies_with_current_buckets(tmp_path):
+    downloads_root = tmp_path / "Downloaded"
+    config = ConfigLoader()
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text(
+        "ids={video_id_1},{video_id_2},{video_id_3},{video_id_4},{video_id_5}",
+        encoding="utf-8",
+    )
+    common_analysis = {
+        **config.get("analysis"),
+        "output_dir": str(tmp_path / "Analysis"),
+        "classified_dir": str(tmp_path / "Classified"),
+        "prompt_file": str(prompt_file),
+        "batch_size": 5,
+        "attributes": [
+            {
+                "key": "suggestiveness_score",
+                "label": "性暗示程度",
+                "description": "desc",
+                "min_score": 1,
+                "max_score": 10,
+            },
+            {
+                "key": "coverage_score",
+                "label": "覆盖程度",
+                "description": "desc",
+                "min_score": 1,
+                "max_score": 10,
+            },
+        ],
+        "primary_attribute": "suggestiveness_score",
+        "buckets": [
+            {"label": "1-3", "min_score": 1, "max_score": 3},
+            {"label": "4", "min_score": 4, "max_score": 4},
+            {"label": "5", "min_score": 5, "max_score": 5},
+            {"label": "6+", "min_score": 6, "max_score": 10},
+        ],
+    }
+    config.update(
+        path=str(downloads_root),
+        analysis={
+            **common_analysis,
+            "organize_buckets": [
+                {"label": "4", "min_score": 4, "max_score": 4},
+                {"label": "5", "min_score": 5, "max_score": 5},
+            ],
+        },
+    )
+
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    for index in range(5):
+        video_dir = downloads_root / "author" / "post" / f"demo-{index}"
+        video_dir.mkdir(parents=True)
+        (video_dir / f"demo-{index}.mp4").write_bytes(b"video")
+        await database.add_aweme(
+            {
+                "aweme_id": str(index),
+                "aweme_type": "video",
+                "title": f"demo-{index}",
+                "author_id": "author",
+                "author_name": "Author",
+                "create_time": 1700000000 + index,
+                "file_path": str(video_dir),
+                "metadata": "{}",
+            }
+        )
+
+    pipeline = AnalysisPipeline(
+        raw_config=config.config,
+        database=database,
+        file_manager=FileManager(str(downloads_root)),
+        provider=_FakeBatchProvider(),
+        frame_extractor=_FakeFrameExtractor(),
+        grid_builder=_FakeGridBuilder(),
+    )
+    run_id = await pipeline.create_run(source_type="all", source_payload={"scope": "all"})
+    assert await pipeline.prepare_from_all_videos(run_id=run_id) == 5
+    await pipeline.resume(run_id)
+    assert sorted(path.parent.name for path in (tmp_path / "Classified").rglob("*.mp4")) == [
+        "性暗示程度_4",
+        "性暗示程度_5",
+    ]
+
+    rebuilt_config = ConfigLoader()
+    rebuilt_config.update(
+        path=str(downloads_root),
+        analysis={
+            **common_analysis,
+            "organize_buckets": [
+                {"label": "all", "min_score": 1, "max_score": 10},
+            ],
+        },
+    )
+    rebuilt_pipeline = AnalysisPipeline(
+        raw_config=rebuilt_config.config,
+        database=database,
+        file_manager=FileManager(str(downloads_root)),
+        provider=_FakeBatchProvider(),
+        frame_extractor=_FakeFrameExtractor(),
+        grid_builder=_FakeGridBuilder(),
+    )
+
+    await rebuilt_pipeline.run_organize(run_id, rebuild=True)
+
+    assert sorted(path.parent.name for path in (tmp_path / "Classified").rglob("*.mp4")) == [
+        "性暗示程度_all",
+        "性暗示程度_all",
+        "性暗示程度_all",
+        "性暗示程度_all",
+        "性暗示程度_all",
+    ]
+    rows = await database.get_analysis_export_rows(run_id)
+    assert all(row["organize_status"] == "success" for row in rows)
+    assert all("性暗示程度_all" in row["organized_path"] for row in rows)
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_prepare_from_all_videos_can_limit_candidates(tmp_path):
     downloads_root = tmp_path / "Downloaded"
     database = Database(str(tmp_path / "test.db"))

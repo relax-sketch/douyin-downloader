@@ -5,6 +5,7 @@ from analysis.config import (
     build_prompt,
     load_attributes,
     load_buckets,
+    load_organize_buckets,
     primary_attribute_key,
     render_batch_prompt,
 )
@@ -56,6 +57,23 @@ def test_analysis_config_rejects_duplicate_attribute_keys():
 
     with pytest.raises(ValueError, match="duplicate analysis attribute key"):
         load_attributes(config.config)
+
+
+def test_organize_buckets_can_filter_scores_independently_from_export_buckets():
+    config = ConfigLoader()
+    config.update(
+        analysis={
+            **config.get("analysis"),
+            "organize_buckets": [
+                {"label": "4", "min_score": 4, "max_score": 4},
+                {"label": "7+", "min_score": 7, "max_score": 10},
+            ],
+        }
+    )
+
+    organize_buckets = load_organize_buckets(config.config)
+
+    assert [item.label for item in organize_buckets] == ["4", "7+"]
 
 
 def test_render_batch_prompt_adapts_prompt_file_to_requested_batch_size(tmp_path):

@@ -48,6 +48,7 @@ analysis:
   enabled: true
   output_dir: ./Analysis/
   classified_dir: ./Classified/
+  organize_run_id: ''
   prompt_file: 提示词.md
   batch_size: 9
   allow_partial_batch: true
@@ -86,17 +87,30 @@ analysis:
       retry_scale_factor: 0.9
       retry_jpeg_quality_factor: 0.95
   buckets:
-  - label: 低
+  - label: 1-3
     min_score: 1
     max_score: 3
-  - label: 中低
+  - label: '4'
     min_score: 4
     max_score: 4
-  - label: 中高
+  - label: '5'
     min_score: 5
-    max_score: 7
-  - label: 高
-    min_score: 8
+    max_score: 5
+  - label: 6+
+    min_score: 6
+    max_score: 10
+  organize_buckets:
+  - label: 1-3
+    min_score: 1
+    max_score: 3
+  - label: '4'
+    min_score: 4
+    max_score: 4
+  - label: '5'
+    min_score: 5
+    max_score: 5
+  - label: 6+
+    min_score: 6
     max_score: 10
 auto_cookie: false
 browser_fallback:
@@ -123,7 +137,7 @@ server:
   max_jobs: 500
   job_ttl_seconds: 86400
 link:
-- https://v.douyin.com/43n9eniNJEs/
+- https://v.douyin.com/b-k0uREp-3I/
 cookies:
   __ac_nonce: 06a0aad0900e6a1c7e26a
   __ac_signature: _02B4Z6wo00f01ObO61wAAIDAaIOdaVZP0Zzm7s.AAFO-7d

@@ -59,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "enabled": False,
         "output_dir": "./Analysis/",
         "classified_dir": "./Classified/",
+        "organize_run_id": "",
         "prompt_file": "",
         "batch_size": 1,
         "allow_partial_batch": False,

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,32 @@ def load_buckets(raw_config: Dict[str, Any]) -> List[ScoreBucket]:
     return buckets
 
 
+def load_organize_buckets(raw_config: Dict[str, Any]) -> List[ScoreBucket]:
+    cfg = analysis_config(raw_config)
+    if "organize_buckets" not in cfg:
+        return load_buckets(raw_config)
+    raw_buckets = cfg.get("organize_buckets") or []
+    if not isinstance(raw_buckets, list) or not raw_buckets:
+        raise ValueError("analysis.organize_buckets must be a non-empty list")
+
+    buckets: List[ScoreBucket] = []
+    for index, raw in enumerate(raw_buckets):
+        if not isinstance(raw, dict):
+            raise ValueError(f"analysis.organize_buckets[{index}] must be a mapping")
+        label = str(raw.get("label") or "").strip()
+        if not label:
+            raise ValueError(f"analysis.organize_buckets[{index}] requires label")
+        try:
+            min_score = int(raw["min_score"])
+            max_score = int(raw["max_score"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"analysis.organize_buckets[{index}] has invalid score bounds")
+        if min_score > max_score:
+            raise ValueError(f"analysis.organize_buckets[{index}] has min_score > max_score")
+        buckets.append(ScoreBucket(label=label, min_score=min_score, max_score=max_score))
+    return buckets
+
+
 def primary_attribute_key(raw_config: Dict[str, Any], attributes: List[AttributeDefinition]) -> str:
     cfg = analysis_config(raw_config)
     primary = str(cfg.get("primary_attribute") or "").strip()
@@ -103,6 +129,13 @@ def bucket_for_score(score: int, buckets: List[ScoreBucket]) -> ScoreBucket:
         if bucket.min_score <= int(score) <= bucket.max_score:
             return bucket
     raise ValueError(f"score {score} does not fit any configured bucket")
+
+
+def bucket_for_score_or_none(score: int, buckets: List[ScoreBucket]) -> Optional[ScoreBucket]:
+    for bucket in buckets:
+        if bucket.min_score <= int(score) <= bucket.max_score:
+            return bucket
+    return None
 
 
 def build_prompt(

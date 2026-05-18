@@ -133,6 +133,7 @@ async def test_database_analysis_lifecycle(tmp_path):
             "video_path": "/tmp/demo.mp4",
             "grid_path": "/tmp/grid.jpg",
             "organize_status": "pending",
+            "organized_path": None,
             "scores": {"artsy": 8},
         }
     ]
@@ -141,6 +142,41 @@ async def test_database_analysis_lifecycle(tmp_path):
     run = await database.get_analysis_run("run-1")
     assert run["csv_path"] == "/tmp/run-1.csv"
 
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_get_latest_classified_run_ignores_unscored_newer_runs(tmp_path):
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    await database.create_analysis_run(
+        run_id="older-classified",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "older-classified",
+        [{"aweme_id": "1", "author_name": "Author", "video_path": "/tmp/1.mp4"}],
+    )
+    await database.update_analysis_item_stage(
+        "older-classified",
+        "1",
+        stage="classify",
+        status="success",
+    )
+    await database.create_analysis_run(
+        run_id="newer-empty",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "newer-empty",
+        [{"aweme_id": "2", "author_name": "Author", "video_path": "/tmp/2.mp4"}],
+    )
+
+    latest = await database.get_latest_classified_run()
+
+    assert latest["run_id"] == "older-classified"
     await database.close()
 
 

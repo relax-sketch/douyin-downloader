@@ -59,7 +59,7 @@ douyin-dl pipeline <子命令> [...]
 | `frames` | 仅执行抽帧 | **需要** |
 | `classify` | 仅执行模型判分 | **需要** |
 | `export` | 仅导出 CSV | **需要** |
-| `organize` | 仅分类归档 | **需要** |
+| `organize` | 仅分类归档 | 可选 |
 
 ---
 
@@ -175,10 +175,41 @@ douyin-dl pipeline resume --run-id <run_id>
 douyin-dl pipeline frames --run-id <run_id>
 douyin-dl pipeline classify --run-id <run_id>
 douyin-dl pipeline export --run-id <run_id>
-douyin-dl pipeline organize --run-id <run_id>
+douyin-dl pipeline organize [--run-id <run_id>]
 ```
 
 只执行单个阶段，用于调试或手动控制。
+
+`organize` 可以在模型判分完成后单独运行，只负责按当前配置复制归类，不会重新抽帧或重新请求模型。它会优先使用 `analysis.organize_run_id` 记住的 run；如果这里为空，第一次会自动选择最新已有评分结果的 run，并把 id 写回 `config.yml`：
+
+```bash
+# 自动找最新已评分 run
+python run.py -c config.yml pipeline organize
+
+# 指定 run
+python run.py -c config.yml pipeline organize --run-id <run_id>
+```
+
+如果你想切换到另一批评分结果，可以手动改 `config.yml` 里的：
+
+```yaml
+analysis:
+  organize_run_id: "<run_id>"
+```
+
+或者直接带一次 `--run-id`，程序会把新的 id 记住。
+
+如果你改了分桶，想把**已经复制过**的结果按新规则重新归类，用：
+
+```bash
+# 自动找最新已评分 run 重建
+python run.py -c config.yml pipeline organize --rebuild
+
+# 指定 run 重建
+python run.py -c config.yml pipeline organize --run-id <run_id> --rebuild
+```
+
+`--rebuild` 会先删除该 run 之前写入 `Classified/` 的副本，再按当前配置重新复制；原始下载视频不会动。
 
 ---
 

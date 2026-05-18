@@ -439,31 +439,66 @@ async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
             return
 
         elif command in {"frames", "classify", "export", "organize", "resume"}:
-            run = await database.get_analysis_run(args.run_id)
+            run_id = args.run_id
+            if command == "organize" and not run_id:
+                analysis_cfg = config.get("analysis", {}) or {}
+                remembered_run_id = str(analysis_cfg.get("organize_run_id") or "").strip()
+                if remembered_run_id:
+                    run = await database.get_analysis_run(remembered_run_id)
+                    if not run:
+                        display.print_error(
+                            f"Configured analysis.organize_run_id not found: {remembered_run_id}"
+                        )
+                        return
+                    run_id = remembered_run_id
+                    display.print_info(f"Using remembered organize run {run_id}")
+                else:
+                    run = await database.get_latest_classified_run()
+                    if not run:
+                        display.print_error("No classified run found. Use --run-id to specify one.")
+                        return
+                    run_id = run["run_id"]
+                    _remember_organize_run(config, run_id)
+                    display.print_info(
+                        f"Using latest classified run {run_id} "
+                        f"({run['classified']}/{run['item_count']} classified)"
+                    )
+            else:
+                run = await database.get_analysis_run(run_id)
             if not run:
-                display.print_error(f"Analysis run not found: {args.run_id}")
+                display.print_error(f"Analysis run not found: {run_id}")
                 return
             assert pipeline_display is not None
-            pipeline_display.start_pipeline(args.run_id, stage_sets[command])
+            pipeline_display.start_pipeline(run_id, stage_sets[command])
             if command == "frames":
-                await pipeline.run_frames(args.run_id)
+                await pipeline.run_frames(run_id)
             elif command == "classify":
-                await pipeline.run_classify(args.run_id)
+                await pipeline.run_classify(run_id)
             elif command == "export":
-                csv_path = await pipeline.run_export(args.run_id)
+                csv_path = await pipeline.run_export(run_id)
                 display.print_success(f"CSV exported: {csv_path}")
             elif command == "organize":
-                await pipeline.run_organize(args.run_id)
+                _remember_organize_run(config, run_id)
+                await pipeline.run_organize(run_id, rebuild=bool(getattr(args, "rebuild", False)))
             else:
-                await pipeline.resume(args.run_id)
-            status = await database.refresh_analysis_run_status(args.run_id)
-            display.print_success(f"Run {args.run_id} status: {status}")
+                await pipeline.resume(run_id)
+            status = await database.refresh_analysis_run_status(run_id)
+            display.print_success(f"Run {run_id} status: {status}")
         else:
             display.print_error("Missing pipeline subcommand")
     finally:
         if "pipeline_display" in locals() and pipeline_display is not None:
             pipeline_display.stop_pipeline()
         await database.close()
+
+
+def _remember_organize_run(config: ConfigLoader, run_id: str) -> None:
+    analysis_cfg = dict(config.get("analysis", {}) or {})
+    if str(analysis_cfg.get("organize_run_id") or "") == str(run_id):
+        return
+    analysis_cfg["organize_run_id"] = str(run_id)
+    config.update(analysis=analysis_cfg)
+    config.save()
 
 
 async def _pipeline_run(
@@ -577,7 +612,22 @@ def main():
 
     for stage in ("frames", "classify", "export", "organize", "resume"):
         stage_parser = pipeline_subparsers.add_parser(stage, help=f"Run pipeline stage: {stage}")
-        stage_parser.add_argument("--run-id", required=True, help="Analysis run id")
+        stage_parser.add_argument(
+            "--run-id",
+            required=(stage != "organize"),
+            default=None,
+            help=(
+                "Analysis run id (default for organize: latest classified run)"
+                if stage == "organize"
+                else "Analysis run id"
+            ),
+        )
+        if stage == "organize":
+            stage_parser.add_argument(
+                "--rebuild",
+                action="store_true",
+                help="Delete previous organized copies for this run and rebuild them from current buckets",
+            )
 
     pipeline_list = pipeline_subparsers.add_parser("list", help="List analysis runs")
     pipeline_continue = pipeline_subparsers.add_parser("continue", help="Auto-resume the latest unfinished run")

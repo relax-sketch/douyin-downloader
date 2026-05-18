@@ -7,6 +7,7 @@ from analysis.config import (
     build_prompt,
     load_attributes,
     load_buckets,
+    load_organize_buckets,
     primary_attribute_key,
     render_batch_prompt,
 )
@@ -92,6 +93,7 @@ class AnalysisPipeline:
         self.attributes = load_attributes(raw_config)
         self.primary_attribute = primary_attribute_key(raw_config, self.attributes)
         self.buckets = load_buckets(raw_config)
+        self.organize_buckets = load_organize_buckets(raw_config)
         self.prompt = build_prompt(raw_config, self.attributes)
         self.batch_size = max(1, int(self.cfg.get("batch_size") or 1))
         self.allow_partial_batch = bool(self.cfg.get("allow_partial_batch", False))
@@ -506,7 +508,11 @@ class AnalysisPipeline:
             self.progress_reporter.finish_stage("export", str(csv_path))
         return csv_path
 
-    async def run_organize(self, run_id: str) -> None:
+    async def run_organize(self, run_id: str, *, rebuild: bool = False) -> None:
+        if rebuild:
+            existing_rows = await self.database.get_analysis_export_rows(run_id)
+            await self.organizer.remove_existing_copies(existing_rows, self.classified_dir)
+            await self.database.reset_analysis_organize(run_id)
         pending_rows = [
             row
             for row in await self.database.get_analysis_export_rows(run_id)
@@ -520,7 +526,7 @@ class AnalysisPipeline:
             classified_dir=self.classified_dir,
             attributes=self.attributes,
             primary_attribute=self.primary_attribute,
-            buckets=self.buckets,
+            buckets=self.organize_buckets,
             progress_callback=(
                 lambda status, detail: self.progress_reporter.advance_stage_item(
                     "organize",

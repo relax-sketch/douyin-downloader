@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from analysis.config import AttributeDefinition, ScoreBucket, bucket_for_score
+from analysis.config import AttributeDefinition, ScoreBucket, bucket_for_score_or_none
 from storage import Database
 from utils.logger import setup_logger
 from utils.validators import sanitize_filename
@@ -12,6 +12,31 @@ logger = setup_logger("AnalysisOrganizer")
 
 
 class ClassifiedOrganizer:
+    async def remove_existing_copies(
+        self,
+        rows: List[Dict[str, object]],
+        classified_dir: Path,
+    ) -> int:
+        root = Path(classified_dir).resolve()
+        removed = 0
+        for row in rows:
+            organized_path = row.get("organized_path")
+            if not organized_path:
+                continue
+            candidate = Path(str(organized_path))
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                logger.warning("Skip deleting organized copy outside classified dir: %s", candidate)
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, resolved.unlink)
+            removed += 1
+        return removed
+
     async def organize(
         self,
         *,
@@ -40,7 +65,17 @@ class ClassifiedOrganizer:
                     if progress_callback:
                         progress_callback("skipped", str(row["aweme_id"]))
                     continue
-                bucket = bucket_for_score(scores[primary_attribute], buckets)
+                bucket = bucket_for_score_or_none(scores[primary_attribute], buckets)
+                if bucket is None:
+                    await database.update_analysis_item_stage(
+                        run_id,
+                        row["aweme_id"],
+                        stage="organize",
+                        status="skipped",
+                    )
+                    if progress_callback:
+                        progress_callback("skipped", str(row["aweme_id"]))
+                    continue
                 source_path = Path(row["video_path"])
                 author_dir = sanitize_filename(row.get("author_name") or "unknown")
                 primary_label = sanitize_filename(label_by_key[primary_attribute])

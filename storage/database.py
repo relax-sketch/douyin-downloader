@@ -656,6 +656,39 @@ class Database:
             "classified": row[7],
         }
 
+    async def get_latest_classified_run(self) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT run_id, source_type, status, csv_path, created_at, updated_at,
+                   (SELECT COUNT(*) FROM analysis_item WHERE run_id = r.run_id) AS item_count,
+                   (SELECT COUNT(*) FROM analysis_item
+                    WHERE run_id = r.run_id AND classify_status = 'success') AS classified
+            FROM analysis_run r
+            WHERE EXISTS (
+                SELECT 1
+                FROM analysis_item i
+                WHERE i.run_id = r.run_id
+                  AND i.classify_status = 'success'
+            )
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row[0],
+            "source_type": row[1],
+            "status": row[2],
+            "csv_path": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "item_count": row[6],
+            "classified": row[7],
+        }
+
     async def add_analysis_items(self, run_id: str, items: List[Dict[str, Any]]) -> None:
         if not items:
             return
@@ -808,7 +841,7 @@ class Database:
         cursor = await db.execute(
             """
             SELECT i.aweme_id, i.author_name, i.video_path, i.grid_path,
-                   i.organize_status, s.attribute_key, s.score
+                   i.organize_status, i.organized_path, s.attribute_key, s.score
             FROM analysis_item i
             LEFT JOIN analysis_score s
               ON s.run_id = i.run_id
@@ -831,12 +864,31 @@ class Database:
                     "video_path": row[2],
                     "grid_path": row[3],
                     "organize_status": row[4],
+                    "organized_path": row[5],
                     "scores": {},
                 },
             )
-            if row[5] is not None:
-                item["scores"][row[5]] = int(row[6])
+            if row[6] is not None:
+                item["scores"][row[6]] = int(row[7])
         return list(grouped.values())
+
+    async def reset_analysis_organize(self, run_id: str) -> int:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            UPDATE analysis_item
+            SET organize_status = 'pending',
+                organized_path = NULL,
+                error_stage = CASE WHEN error_stage = 'organize' THEN NULL ELSE error_stage END,
+                error_message = CASE WHEN error_stage = 'organize' THEN NULL ELSE error_message END,
+                updated_at = ?
+            WHERE run_id = ?
+              AND classify_status = 'success'
+            """,
+            (int(datetime.now().timestamp()), run_id),
+        )
+        await db.commit()
+        return int(cursor.rowcount or 0)
 
     async def mark_analysis_exported(self, run_id: str, csv_path: str) -> None:
         now_ts = int(datetime.now().timestamp())
