@@ -121,8 +121,8 @@ analysis:
       enabled: true
       jpeg_quality: 90
       optimize: true
-      retry_scale_factor: 0.6         # 首次失败后的重试：长宽等比缩到 60%
-      retry_jpeg_quality_factor: 0.9  # 首次失败后的重试：JPEG 质量再乘 0.9
+      retry_scale_factor: 0.9          # 每次失败重试：在上一轮基础上长宽等比缩到 90%
+      retry_jpeg_quality_factor: 0.95  # 每次失败重试：JPEG 质量在上一轮基础上再乘 0.95
   buckets:
     - label: 低
       min_score: 0

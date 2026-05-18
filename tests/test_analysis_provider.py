@@ -100,7 +100,7 @@ def test_provider_preprocess_fits_legacy_oversized_grid_before_upload(tmp_path):
         assert image.size == (4000, 200)
 
 
-def test_provider_first_retry_scales_to_sixty_percent_and_reduces_quality(tmp_path):
+def test_provider_retries_apply_progressive_ninety_percent_scaling_and_quality_reduction(tmp_path):
     from io import BytesIO
     from PIL import Image
 
@@ -110,14 +110,20 @@ def test_provider_first_retry_scales_to_sixty_percent_and_reduces_quality(tmp_pa
         base_url="https://example.test/v1",
         model="demo",
         preprocess_jpeg_quality=90,
-        retry_scale_factor=0.6,
-        retry_jpeg_quality_factor=0.9,
+        retry_scale_factor=0.9,
+        retry_jpeg_quality_factor=0.95,
     )
 
-    scale_factor, quality = provider._retry_transform(1)
-    payload = provider._image_payload_bytes(image_path, compress_level=1)
+    first_scale_factor, first_quality = provider._retry_transform(1)
+    second_scale_factor, second_quality = provider._retry_transform(2)
+    first_payload = provider._image_payload_bytes(image_path, compress_level=1)
+    second_payload = provider._image_payload_bytes(image_path, compress_level=2)
 
-    assert scale_factor == 0.6
-    assert quality == 81
-    with Image.open(BytesIO(payload)) as image:
-        assert image.size == (600, 300)
+    assert first_scale_factor == 0.9
+    assert first_quality == 86
+    assert second_scale_factor == 0.81
+    assert second_quality == 81
+    with Image.open(BytesIO(first_payload)) as image:
+        assert image.size == (900, 450)
+    with Image.open(BytesIO(second_payload)) as image:
+        assert image.size == (810, 405)

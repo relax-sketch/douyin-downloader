@@ -69,8 +69,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
         preprocess_enabled: bool = True,
         preprocess_jpeg_quality: int = 90,
         preprocess_optimize: bool = True,
-        retry_scale_factor: float = 0.6,
-        retry_jpeg_quality_factor: float = 0.9,
+        retry_scale_factor: float = 0.9,
+        retry_jpeg_quality_factor: float = 0.95,
     ):
         self.base_url = str(base_url or "").rstrip("/")
         self.model = str(model or "").strip()
@@ -86,8 +86,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
         self.preprocess_enabled = bool(preprocess_enabled)
         self.preprocess_jpeg_quality = int(preprocess_jpeg_quality)
         self.preprocess_optimize = bool(preprocess_optimize)
-        self.retry_scale_factor = float(retry_scale_factor or 0.6)
-        self.retry_jpeg_quality_factor = float(retry_jpeg_quality_factor or 0.9)
+        self.retry_scale_factor = float(retry_scale_factor or 0.9)
+        self.retry_jpeg_quality_factor = float(retry_jpeg_quality_factor or 0.95)
 
     async def score(
         self,
@@ -296,8 +296,14 @@ class OpenAICompatibleVisionProvider(VisionProvider):
     def _retry_transform(self, compress_level: int) -> tuple[float, int]:
         if compress_level <= 0:
             return 1.0, self.preprocess_jpeg_quality
-        scale_factor = self.retry_scale_factor
-        quality = max(1, min(95, round(self.preprocess_jpeg_quality * self.retry_jpeg_quality_factor)))
+        scale_factor = self.retry_scale_factor ** compress_level
+        quality = max(
+            1,
+            min(
+                95,
+                round(self.preprocess_jpeg_quality * (self.retry_jpeg_quality_factor ** compress_level)),
+            ),
+        )
         return scale_factor, quality
 
     def _to_data_url(self, image_path: Path, compress_level: int = 0) -> str:
@@ -378,8 +384,8 @@ def build_provider(provider_config: Dict[str, object]) -> VisionProvider:
         preprocess_enabled=bool(preprocess.get("enabled") if isinstance(preprocess, dict) else True),
         preprocess_jpeg_quality=int(preprocess.get("jpeg_quality", 90) if isinstance(preprocess, dict) else 90),
         preprocess_optimize=bool(preprocess.get("optimize", True) if isinstance(preprocess, dict) else True),
-        retry_scale_factor=float(preprocess.get("retry_scale_factor", 0.6) if isinstance(preprocess, dict) else 0.6),
+        retry_scale_factor=float(preprocess.get("retry_scale_factor", 0.9) if isinstance(preprocess, dict) else 0.9),
         retry_jpeg_quality_factor=float(
-            preprocess.get("retry_jpeg_quality_factor", 0.9) if isinstance(preprocess, dict) else 0.9
+            preprocess.get("retry_jpeg_quality_factor", 0.95) if isinstance(preprocess, dict) else 0.95
         ),
     )

@@ -116,8 +116,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                 "enabled": True,
                 "jpeg_quality": 90,
                 "optimize": True,
-                "retry_scale_factor": 0.6,
-                "retry_jpeg_quality_factor": 0.9,
+                "retry_scale_factor": 0.9,
+                "retry_jpeg_quality_factor": 0.95,
             },
         },
         "buckets": [
