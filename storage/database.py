@@ -81,6 +81,50 @@ class Database:
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_run (
+                run_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_payload TEXT,
+                status TEXT NOT NULL,
+                csv_path TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_item (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                aweme_id TEXT NOT NULL,
+                author_name TEXT,
+                video_path TEXT NOT NULL,
+                grid_path TEXT,
+                organized_path TEXT,
+                frames_status TEXT NOT NULL DEFAULT 'pending',
+                classify_status TEXT NOT NULL DEFAULT 'pending',
+                export_status TEXT NOT NULL DEFAULT 'pending',
+                organize_status TEXT NOT NULL DEFAULT 'pending',
+                error_stage TEXT,
+                error_message TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER,
+                UNIQUE(run_id, aweme_id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_score (
+                run_id TEXT NOT NULL,
+                aweme_id TEXT NOT NULL,
+                attribute_key TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                PRIMARY KEY (run_id, aweme_id, attribute_key)
+            )
+        """)
+
         # `job` persists the task-center JobManager records so they survive
         # a sidecar restart. Only terminal jobs (success / failed / cancelled)
         # are ever written here — see server/jobs.py. `last_retry_summary`
@@ -117,6 +161,13 @@ class Database:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_transcript_status ON transcript_job(status)"
         )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_analysis_item_run ON analysis_item(run_id)")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_analysis_item_frames ON analysis_item(frames_status)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_analysis_item_classify ON analysis_item(classify_status)"
+        )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_job_created_at ON job(created_at)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_job_status ON job(status)")
 
@@ -137,6 +188,8 @@ class Database:
         if "retry_history" not in existing_job_columns:
             await db.execute("ALTER TABLE job ADD COLUMN retry_history TEXT")
 
+        cursor = await db.execute("PRAGMA table_info(analysis_item)")
+        existing_analysis_columns = {row[1] for row in await cursor.fetchall()}
         await db.commit()
         self._initialized = True
 
@@ -399,6 +452,457 @@ class Database:
             ),
         )
         await db.commit()
+
+    async def get_analyzed_aweme_ids(self) -> set:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            "SELECT DISTINCT aweme_id FROM analysis_item WHERE classify_status = 'success'"
+        )
+        return {row[0] for row in await cursor.fetchall()}
+
+    async def list_video_awemes(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        db = await self._get_conn()
+        sql = """
+            SELECT aweme_id, author_name, file_path
+            FROM aweme
+            WHERE aweme_type = 'video'
+              AND file_path IS NOT NULL
+              AND file_path != ''
+            ORDER BY download_time DESC, id DESC
+        """
+        params: List[Any] = []
+        if limit is not None and int(limit) > 0:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        cursor = await db.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "aweme_id": row[0],
+                "author_name": row[1],
+                "file_path": row[2],
+            }
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Analysis pipeline persistence
+    # ------------------------------------------------------------------
+
+    async def create_analysis_run(
+        self,
+        *,
+        run_id: str,
+        source_type: str,
+        source_payload: Dict[str, Any],
+    ) -> None:
+        now_ts = int(datetime.now().timestamp())
+        db = await self._get_conn()
+        await db.execute(
+            """
+            INSERT INTO analysis_run (
+                run_id, source_type, source_payload, status, created_at, updated_at
+            ) VALUES (?, ?, ?, 'prepared', ?, ?)
+            """,
+            (
+                run_id,
+                source_type,
+                json.dumps(source_payload, ensure_ascii=False),
+                now_ts,
+                now_ts,
+            ),
+        )
+        await db.commit()
+
+    async def get_analysis_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT run_id, source_type, source_payload, status, csv_path, created_at, updated_at
+            FROM analysis_run
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row[2]) if row[2] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            "run_id": row[0],
+            "source_type": row[1],
+            "source_payload": payload,
+            "status": row[3],
+            "csv_path": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
+
+    async def list_analysis_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT r.run_id, r.source_type, r.status, r.csv_path, r.created_at, r.updated_at,
+                   COUNT(i.id) AS item_count,
+                   SUM(CASE WHEN i.classify_status = 'success' THEN 1 ELSE 0 END) AS classified
+            FROM analysis_run r
+            LEFT JOIN analysis_item i ON i.run_id = r.run_id
+            GROUP BY r.run_id
+            ORDER BY r.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "source_type": row[1],
+                "status": row[2],
+                "csv_path": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+                "item_count": row[6],
+                "classified": row[7],
+            }
+            for row in rows
+        ]
+
+    async def reset_failed_analysis_items(self, run_id: str) -> int:
+        """Reset all failed items so they can be retried. Cascades: a frames
+        failure also resets classify/export/organize, etc. Returns count."""
+        db = await self._get_conn()
+        now_ts = int(datetime.now().timestamp())
+        await db.execute(
+            """
+            UPDATE analysis_item
+            SET frames_status = 'pending',
+                classify_status = 'pending',
+                export_status = 'pending',
+                organize_status = 'pending',
+                error_stage = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE run_id = ? AND frames_status = 'failed'
+            """,
+            (now_ts, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE analysis_item
+            SET classify_status = 'pending',
+                export_status = 'pending',
+                organize_status = 'pending',
+                error_stage = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE run_id = ? AND classify_status = 'failed'
+            """,
+            (now_ts, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE analysis_item
+            SET export_status = 'pending',
+                organize_status = 'pending',
+                error_stage = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE run_id = ? AND export_status = 'failed'
+            """,
+            (now_ts, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE analysis_item
+            SET organize_status = 'pending',
+                error_stage = NULL,
+                error_message = NULL,
+                updated_at = ?
+            WHERE run_id = ? AND organize_status = 'failed'
+            """,
+            (now_ts, run_id),
+        )
+        await db.commit()
+        return db.total_changes
+
+    async def get_latest_unfinished_run(self) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT run_id, source_type, status, csv_path, created_at, updated_at,
+                   (SELECT COUNT(*) FROM analysis_item WHERE run_id = r.run_id) AS item_count,
+                   (SELECT COUNT(*) FROM analysis_item WHERE run_id = r.run_id AND classify_status = 'success') AS classified
+            FROM analysis_run r
+            WHERE status IN ('prepared', 'running', 'partial')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row[0],
+            "source_type": row[1],
+            "status": row[2],
+            "csv_path": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "item_count": row[6],
+            "classified": row[7],
+        }
+
+    async def add_analysis_items(self, run_id: str, items: List[Dict[str, Any]]) -> None:
+        if not items:
+            return
+        now_ts = int(datetime.now().timestamp())
+        rows = []
+        seen = set()
+        for item in items:
+            aweme_id = str(item.get("aweme_id") or "").strip()
+            video_path = str(item.get("video_path") or "").strip()
+            if not aweme_id or not video_path or aweme_id in seen:
+                continue
+            seen.add(aweme_id)
+            rows.append(
+                (
+                    run_id,
+                    aweme_id,
+                    item.get("author_name"),
+                    video_path,
+                    now_ts,
+                    now_ts,
+                )
+            )
+        if not rows:
+            return
+        db = await self._get_conn()
+        await db.executemany(
+            """
+            INSERT OR IGNORE INTO analysis_item (
+                run_id, aweme_id, author_name, video_path, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await db.commit()
+
+    async def list_analysis_items_for_stage(
+        self,
+        run_id: str,
+        stage: str,
+    ) -> List[Dict[str, Any]]:
+        if stage not in {"frames", "classify"}:
+            raise ValueError(f"unsupported analysis stage query: {stage}")
+        where_clause = (
+            "frames_status != 'success'"
+            if stage == "frames"
+            else "frames_status = 'success' AND classify_status != 'success'"
+        )
+        db = await self._get_conn()
+        cursor = await db.execute(
+            f"""
+            SELECT aweme_id, author_name, video_path, grid_path,
+                   frames_status, classify_status, export_status, organize_status
+            FROM analysis_item
+            WHERE run_id = ? AND {where_clause}
+            ORDER BY id ASC
+            """,
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "aweme_id": row[0],
+                "author_name": row[1],
+                "video_path": row[2],
+                "grid_path": row[3],
+                "frames_status": row[4],
+                "classify_status": row[5],
+                "export_status": row[6],
+                "organize_status": row[7],
+            }
+            for row in rows
+        ]
+
+    async def update_analysis_item_stage(
+        self,
+        run_id: str,
+        aweme_id: str,
+        *,
+        stage: str,
+        status: str,
+        error_message: Optional[str] = None,
+        extra_updates: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        status_column = {
+            "frames": "frames_status",
+            "classify": "classify_status",
+            "export": "export_status",
+            "organize": "organize_status",
+        }.get(stage)
+        if status_column is None:
+            raise ValueError(f"unsupported analysis stage: {stage}")
+
+        updates = [f"{status_column} = ?", "updated_at = ?"]
+        params: List[Any] = [status, int(datetime.now().timestamp())]
+        if status == "failed":
+            updates.extend(
+                [
+                    "error_stage = ?",
+                    "error_message = ?",
+                    "retry_count = retry_count + 1",
+                ]
+            )
+            params.extend([stage, error_message])
+        else:
+            updates.extend(["error_stage = NULL", "error_message = NULL"])
+
+        if extra_updates:
+            allowed_columns = {"grid_path", "organized_path"}
+            for key, value in extra_updates.items():
+                if key not in allowed_columns:
+                    raise ValueError(f"unsupported analysis item update column: {key}")
+                updates.append(f"{key} = ?")
+                params.append(value)
+
+        params.extend([run_id, aweme_id])
+        db = await self._get_conn()
+        await db.execute(
+            f"""
+            UPDATE analysis_item
+            SET {", ".join(updates)}
+            WHERE run_id = ? AND aweme_id = ?
+            """,
+            params,
+        )
+        await db.commit()
+
+    async def upsert_analysis_scores(
+        self,
+        run_id: str,
+        aweme_id: str,
+        scores: Dict[str, int],
+    ) -> None:
+        if not scores:
+            return
+        db = await self._get_conn()
+        rows = [(run_id, aweme_id, key, int(value)) for key, value in scores.items()]
+        await db.executemany(
+            """
+            INSERT INTO analysis_score (run_id, aweme_id, attribute_key, score)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(run_id, aweme_id, attribute_key) DO UPDATE SET
+                score = excluded.score
+            """,
+            rows,
+        )
+        await db.commit()
+
+    async def get_analysis_export_rows(self, run_id: str) -> List[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT i.aweme_id, i.author_name, i.video_path, i.grid_path,
+                   i.organize_status, s.attribute_key, s.score
+            FROM analysis_item i
+            LEFT JOIN analysis_score s
+              ON s.run_id = i.run_id
+             AND s.aweme_id = i.aweme_id
+            WHERE i.run_id = ?
+              AND i.classify_status = 'success'
+            ORDER BY i.id ASC, s.attribute_key ASC
+            """,
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            aweme_id = row[0]
+            item = grouped.setdefault(
+                aweme_id,
+                {
+                    "aweme_id": aweme_id,
+                    "author_name": row[1],
+                    "video_path": row[2],
+                    "grid_path": row[3],
+                    "organize_status": row[4],
+                    "scores": {},
+                },
+            )
+            if row[5] is not None:
+                item["scores"][row[5]] = int(row[6])
+        return list(grouped.values())
+
+    async def mark_analysis_exported(self, run_id: str, csv_path: str) -> None:
+        now_ts = int(datetime.now().timestamp())
+        db = await self._get_conn()
+        await db.execute(
+            """
+            UPDATE analysis_item
+            SET export_status = 'success',
+                updated_at = ?
+            WHERE run_id = ?
+              AND classify_status = 'success'
+            """,
+            (now_ts, run_id),
+        )
+        await db.execute(
+            """
+            UPDATE analysis_run
+            SET csv_path = ?,
+                updated_at = ?
+            WHERE run_id = ?
+            """,
+            (csv_path, now_ts, run_id),
+        )
+        await db.commit()
+
+    async def refresh_analysis_run_status(self, run_id: str) -> str:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN classify_status = 'success' THEN 1 ELSE 0 END) AS classified_count,
+                SUM(CASE WHEN frames_status = 'failed'
+                          OR classify_status = 'failed'
+                          OR organize_status = 'failed'
+                         THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN organize_status IN ('success', 'skipped') THEN 1 ELSE 0 END)
+                    AS organized_count
+            FROM analysis_item
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        total_count = int(row[0] or 0)
+        classified_count = int(row[1] or 0)
+        failed_count = int(row[2] or 0)
+        organized_count = int(row[3] or 0)
+        if total_count == 0:
+            status = "prepared"
+        elif organized_count == total_count:
+            status = "completed"
+        elif failed_count > 0 and classified_count + failed_count >= total_count:
+            status = "partial"
+        else:
+            status = "running"
+        await db.execute(
+            """
+            UPDATE analysis_run
+            SET status = ?, updated_at = ?
+            WHERE run_id = ?
+            """,
+            (status, int(datetime.now().timestamp()), run_id),
+        )
+        await db.commit()
+        return status
 
     async def get_transcript_job(self, aweme_id: str) -> Optional[Dict[str, Any]]:
         db = await self._get_conn()

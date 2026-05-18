@@ -1,0 +1,146 @@
+path: ./Downloaded/
+music: true
+cover: true
+avatar: true
+json: true
+start_time: ''
+end_time: ''
+folderstyle: true
+filename_template: '{date}_{title}_{id}'
+folder_template: '{date}_{title}_{id}'
+author_dir: nickname
+download_pinned: false
+mode:
+- post
+number:
+  post: 0
+  like: 0
+  allmix: 0
+  mix: 0
+  music: 0
+  collect: 0
+  collectmix: 0
+increase:
+  post: true
+  like: false
+  allmix: false
+  mix: false
+  music: false
+thread: 5
+retry_times: 3
+rate_limit: 2
+proxy: ''
+database: true
+database_path: dy_downloader.db
+progress:
+  quiet_logs: true
+transcript:
+  enabled: false
+  model: gpt-4o-mini-transcribe
+  output_dir: ''
+  response_formats:
+  - txt
+  - json
+  api_url: https://api.openai.com/v1/audio/transcriptions
+  api_key_env: OPENAI_API_KEY
+  api_key: ''
+analysis:
+  enabled: true
+  output_dir: ./Analysis/
+  classified_dir: ./Classified/
+  prompt_file: 提示词.md
+  batch_size: 8
+  allow_partial_batch: true
+  frame_count: 9
+  grid_rows: 3
+  grid_cols: 3
+  primary_attribute: suggestiveness_score
+  attributes:
+  - key: suggestiveness_score
+    label: 性暗示程度
+    description: 综合强度与覆盖程度后的最终性暗示评分
+    min_score: 1
+    max_score: 10
+  - key: coverage_score
+    label: 覆盖程度
+    description: 9 张截图中性暗示内容出现的覆盖程度
+    min_score: 1
+    max_score: 10
+  prompt_template: 请根据这张由同一条视频抽取的 3x3 九宫格图片，为下列属性分别打分。 每个分数都必须是整数，范围为对应属性定义的 min_score
+    到 max_score。 仅返回 JSON 对象，不要返回解释、Markdown 或额外文本。 属性定义：{attribute_descriptions}
+  provider:
+    type: openai_compatible
+    base_url: https://api.ttk.homes/v1
+    model: gemini-3-flash-preview-cli
+    api_key_env: OPENAI_API_KEY
+    api_key: sk-JkqZoYVSSCQWrsHFRfc3D4TNFmYtUyKVrblRYmARvomsOfn1
+    timeout: 120
+    rate_limit: 1
+    retry_times: 3
+    retry_max_total_seconds: 600
+    image_preprocess:
+      enabled: true
+      jpeg_quality: 90
+      optimize: true
+  buckets:
+  - label: 低
+    min_score: 1
+    max_score: 3
+  - label: 中低
+    min_score: 4
+    max_score: 4
+  - label: 中高
+    min_score: 5
+    max_score: 7
+  - label: 高
+    min_score: 8
+    max_score: 10
+auto_cookie: false
+browser_fallback:
+  enabled: true
+  headless: false
+  max_scrolls: 240
+  idle_rounds: 8
+  wait_timeout_seconds: 600
+notifications:
+  enabled: false
+  on_success: true
+  on_failure: true
+  providers: []
+comments:
+  enabled: false
+  include_replies: false
+  max_comments: 0
+  page_size: 20
+live:
+  max_duration_seconds: 0
+  chunk_size: 65536
+  idle_timeout_seconds: 30
+server:
+  max_jobs: 500
+  job_ttl_seconds: 86400
+link:
+- https://v.douyin.com/43n9eniNJEs/
+cookies:
+  __ac_nonce: 06a0aad0900e6a1c7e26a
+  __ac_signature: _02B4Z6wo00f01ObO61wAAIDAaIOdaVZP0Zzm7s.AAFO-7d
+  UIFID_TEMP: b684c79658e5909c916769b2e80c406ed39ea89d6c7cce823581f3f595501a34c777c559ee9ca16e83f8133502a2ea1ae7821842a4fb40e5e85fdbedac31ca766bde37774cb57a98051acd7013ccc472
+  x-web-secsdk-uid: e7d11bcd-e062-4b2c-9fd9-99efeadd61b0
+  s_v_web_id: verify_mpat0cet_zibG4a8b_fVvr_4Kw7_AeSI_DSPTBHhA0U2j
+  bd_ticket_guard_client_web_domain: '2'
+  passport_csrf_token: 353783dcfc47677487aad4d242974568
+  bd_ticket_guard_web_domain: '2'
+  __security_server_data_status: '1'
+  UIFID: b684c79658e5909c916769b2e80c406ed39ea89d6c7cce823581f3f595501a345cfd2cfd8de15e46baa0f2e112b960b7c393839c052c7c2805e2e5ff69a4982a3ed8e0bb6788b215e07da6134750462dd78a6105f7749be59909dae97e9749930ce48ccdc81f4710d20c8947a2ef749fcea81ece6b9ab244781dfa75e3f0c0386a4237ca64ee11abc69762745b3b615a13c00391a564655784f1b9a8f45ca410
+  sid_guard: a3fc7cb8ab0bc844d4d89ffa980f6e12%7C1779084608%7C5184000%7CFri%2C+17-Jul-2026+06%3A10%3A08+GMT
+  sid_tt: a3fc7cb8ab0bc844d4d89ffa980f6e12
+  sessionid: a3fc7cb8ab0bc844d4d89ffa980f6e12
+  _bd_ticket_crypt_cookie: 1839cb95cdaa0d1d435558f62576d630
+  __security_mc_1_s_sdk_sign_data_key_web_protect: 091c78f2-4d13-bc78
+  __security_mc_1_s_sdk_cert_key: 6fac33b7-4798-9c08
+  __security_mc_1_s_sdk_crypt_sdk: fb6edc58-4f33-a597
+  ttwid: 1%7CJNW7bR3y_tWUXG5q45P5wSFx58526SQTm0dJ1U_vnOs%7C1779084610%7C4f807f4c7fcf1d5639ca822a3c89b0b886ce8fe4156ed5e43a0ff4057251d790
+  bd_ticket_guard_client_data: eyJiZC10aWNrZXQtZ3VhcmQtdmVyc2lvbiI6MiwiYmQtdGlja2V0LWd1YXJkLWl0ZXJhdGlvbi12ZXJzaW9uIjoxLCJiZC10aWNrZXQtZ3VhcmQtcmVlLXB1YmxpYy1rZXkiOiJCSzZpR1c1VUxDMm5JRWdOc3I3eXpjMitrRWpNclhwZk13L3ZKeGFVZElKZXJkVWt2YUM4Q25iMHphbC9UeHdFaHZyV2liWGN0Wmg4VldjYldXRFgxZm89IiwiYmQtdGlja2V0LWd1YXJkLXdlYi12ZXJzaW9uIjoyfQ%3D%3D
+  bd_ticket_guard_client_data_v2: eyJyZWVfcHVibGljX2tleSI6IkJLNmlHVzVVTEMybklFZ05zcjd5emMyK2tFak1yWHBmTXcvdkp4YVVkSUplcmRVa3ZhQzhDbmIwemFsL1R4d0VodnJXaWJYY3RaaDhWV2NiV1dEWDFmbz0iLCJ0c19zaWduIjoidHMuMi40NGI4NzU4NzExNDU1MzQ5YjUyZjdmZWQwNmEwZTViMzZlNDU4NjQ5MWEwNTEwYjE3OWMzY2E4N2YzNmEyNGRjYzRmYmU4N2QyMzE5Y2YwNTMxODYyNGNlZGExNDkxMWNhNDA2ZGVkYmViZWRkYjJlMzBmY2U4ZDRmYTAyNTc1ZCIsInJlcV9jb250ZW50Ijoic2VjX3RzIiwicmVxX3NpZ24iOiJYUzR1S2s4QVpyMjFuNncrbjl3TWxoNE0yT0J2NWJqS2hqb0tHNjFHMlg0PSIsInNlY190cyI6IiNEM0xrZ29sZlRKZlp6ZlRGR0VNa2l4d2owSGM3OHBoUFFrbWpldU5lb2FuSlRaOG9tZ0cyZ2JIMTlsaE8ifQ%3D%3D
+  odin_tt: 43c564cb63407b88ae226d91687ff50d7a6f86fe22889801264d724bf0c73b02e16ae537cea018590cfa14f62e80f9b798df7b9db8f193da086be061e700d96a2ac0e7e97d8e412fb7f3c76e50ed533f
+  msToken: 9OyworhGw8YBw65aKmRpiybO-FjCTZAqAOD8-Y23Z3beIMj_KcdCXy4ZqKi2rH3ZRaLxkegV6JdmvGs5pef88LElzKcR8tY36sQhpDEA2brPbp9pnI4EKuQ2c0krPBtlf_VzJVDWvdTxqU8yxRXuD1uPlUdXlhMzpG0Mqh8E5uzq_S5XNAWAZIEM

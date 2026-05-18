@@ -29,6 +29,7 @@ dependencies = [
     "pyyaml>=6.0.1",
     "python-dateutil>=2.8.2",
     "gmssl>=3.2.2",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -61,7 +62,7 @@ all = [
 douyin-dl = "cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["cli*", "core*", "auth*", "config*", "control*", "storage*", "utils*", "tools*", "server*"]
+include = ["cli*", "core*", "auth*", "config*", "control*", "storage*", "utils*", "tools*", "server*", "analysis*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

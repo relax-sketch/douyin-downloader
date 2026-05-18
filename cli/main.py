@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from analysis import AnalysisPipeline
 from auth import CookieManager
+from cli.pipeline_progress_display import PipelineProgressDisplay
 from cli.progress_display import ProgressDisplay
 from config import ConfigLoader
 from control import QueueManager, RateLimiter, RetryHandler
@@ -171,6 +173,10 @@ async def main_async(args):
     if args.path:
         config.update(path=args.path)
 
+    if getattr(args, "command", None) == "pipeline":
+        await _run_pipeline_subcommand(args, config)
+        return
+
     # 独立子命令：热榜 / 搜索 / 服务
     if args.hot_board is not None or args.search:
         await _run_discovery_subcommand(args, config)
@@ -334,6 +340,191 @@ async def _dispatch_notifications(config: ConfigLoader, total_result: Any, url_c
         logger.warning("Notification dispatch error: %s", exc)
 
 
+async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
+    if not config.get("database"):
+        display.print_error("Pipeline requires database: true")
+        return
+
+    database = Database(
+        db_path=str(config.get("database_path", "dy_downloader.db") or "dy_downloader.db")
+    )
+    await database.initialize()
+    try:
+        command = args.pipeline_command
+        stage_sets = {
+            "run": ("frames", "classify", "export", "organize"),
+            "frames": ("frames",),
+            "classify": ("classify",),
+            "export": ("export",),
+            "organize": ("organize",),
+            "resume": ("frames", "classify", "export", "organize"),
+        }
+        pipeline_display = (
+            PipelineProgressDisplay() if command in stage_sets else None
+        )
+        file_manager = FileManager(config.get("path"))
+        pipeline = AnalysisPipeline(
+            raw_config=config.config,
+            database=database,
+            file_manager=file_manager,
+            progress_reporter=pipeline_display,
+        )
+        if command == "run":
+            await _pipeline_run(args, config, database, pipeline)
+        elif command == "prepare":
+            if args.scope != "all":
+                display.print_error("pipeline prepare currently supports only --scope all")
+                return
+            run_id = await pipeline.create_run(
+                source_type="all",
+                source_payload={"scope": "all", "limit": int(args.limit or 0)},
+            )
+            count = await pipeline.prepare_from_all_videos(
+                run_id=run_id,
+                limit=int(args.limit or 0),
+            )
+            display.print_success(f"Prepared run {run_id}: {count} video(s)")
+        elif command == "list":
+            runs = await database.list_analysis_runs()
+            if not runs:
+                display.print_info("No analysis runs found")
+                return
+            from datetime import datetime
+            for r in runs:
+                ts = datetime.fromtimestamp(r["created_at"]).strftime("%m-%d %H:%M") if r["created_at"] else "?"
+                display.print_info(
+                    f'{r["run_id"][:12]}...  {r["status"]:10s}  {r["classified"]}/{r["item_count"]} items  {ts}'
+                )
+            return
+
+        elif command == "retry":
+            run_id = args.run_id
+            if not run_id:
+                run = await database.get_latest_unfinished_run()
+                if not run:
+                    display.print_error("No unfinished run found. Use --run-id to specify one.")
+                    return
+                run_id = run["run_id"]
+            else:
+                run_rec = await database.get_analysis_run(run_id)
+                if not run_rec:
+                    display.print_error(f"Analysis run not found: {run_id}")
+                    return
+            n = await database.reset_failed_analysis_items(run_id)
+            display.print_info(f"Reset {n} failed item(s) in run {run_id}")
+            pipeline_display = PipelineProgressDisplay()
+            pipeline.progress_reporter = pipeline_display
+            pipeline_display.start_pipeline(run_id, stage_sets["resume"])
+            await pipeline.resume(run_id)
+            status = await database.refresh_analysis_run_status(run_id)
+            pipeline_display.stop_pipeline()
+            display.print_success(f"Run {run_id} status: {status}")
+            return
+
+        elif command == "continue":
+            run = await database.get_latest_unfinished_run()
+            if not run:
+                display.print_info("No unfinished run found. Use 'pipeline run --scope all' to start one.")
+                return
+            display.print_info(
+                f"Resuming run {run['run_id']} ({run['classified']}/{run['item_count']} classified)"
+            )
+            pipeline_display = PipelineProgressDisplay()
+            pipeline.progress_reporter = pipeline_display
+            pipeline_display.start_pipeline(run["run_id"], stage_sets["resume"])
+            await pipeline.resume(run["run_id"])
+            status = await database.refresh_analysis_run_status(run["run_id"])
+            pipeline_display.stop_pipeline()
+            display.print_success(f"Run {run['run_id']} status: {status}")
+            return
+
+        elif command in {"frames", "classify", "export", "organize", "resume"}:
+            run = await database.get_analysis_run(args.run_id)
+            if not run:
+                display.print_error(f"Analysis run not found: {args.run_id}")
+                return
+            assert pipeline_display is not None
+            pipeline_display.start_pipeline(args.run_id, stage_sets[command])
+            if command == "frames":
+                await pipeline.run_frames(args.run_id)
+            elif command == "classify":
+                await pipeline.run_classify(args.run_id)
+            elif command == "export":
+                csv_path = await pipeline.run_export(args.run_id)
+                display.print_success(f"CSV exported: {csv_path}")
+            elif command == "organize":
+                await pipeline.run_organize(args.run_id)
+            else:
+                await pipeline.resume(args.run_id)
+            status = await database.refresh_analysis_run_status(args.run_id)
+            display.print_success(f"Run {args.run_id} status: {status}")
+        else:
+            display.print_error("Missing pipeline subcommand")
+    finally:
+        if "pipeline_display" in locals() and pipeline_display is not None:
+            pipeline_display.stop_pipeline()
+        await database.close()
+
+
+async def _pipeline_run(
+    args,
+    config: ConfigLoader,
+    database: Database,
+    pipeline: AnalysisPipeline,
+) -> None:
+    if args.scope == "all":
+        run_id = await pipeline.create_run(
+            source_type="all",
+            source_payload={"scope": "all", "limit": int(args.limit or 0)},
+        )
+        count = await pipeline.prepare_from_all_videos(
+            run_id=run_id,
+            limit=int(args.limit or 0),
+        )
+    elif args.urls_file:
+        urls = _read_urls_file(args.urls_file)
+        if not urls:
+            display.print_error(f"No URLs found in file: {args.urls_file}")
+            return
+        run_id = await pipeline.create_run(
+            source_type="urls_file",
+            source_payload={"urls_file": str(args.urls_file), "url_count": len(urls)},
+        )
+        start_line = pipeline.discovery.manifest_line_count()
+        cookies = config.get_cookies()
+        cookie_manager = CookieManager()
+        cookie_manager.set_cookies(cookies)
+        if not cookie_manager.validate_cookies():
+            display.print_warning("Cookies may be invalid or incomplete")
+        for url in urls:
+            await download_url(url, config, cookie_manager, database, progress_reporter=None)
+        count = await pipeline.prepare_from_manifest_delta(run_id=run_id, start_line=start_line)
+    else:
+        display.print_error("pipeline run requires either --urls-file or --scope all")
+        return
+
+    display.print_info(f"Prepared run {run_id}: {count} video(s)")
+    if pipeline.progress_reporter:
+        pipeline.progress_reporter.start_pipeline(
+            run_id,
+            ("frames", "classify", "export", "organize"),
+        )
+    await pipeline.resume(run_id)
+    status = await database.refresh_analysis_run_status(run_id)
+    display.print_success(f"Run {run_id} status: {status}")
+
+
+def _read_urls_file(path: str) -> list:
+    urls = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            urls.append(value)
+    return urls
+
+
 def main():
     parser = argparse.ArgumentParser(description="Douyin Downloader - 抖音批量下载工具")
     parser.add_argument("-u", "--url", action="append", help="Download URL(s)")
@@ -371,6 +562,27 @@ def main():
     )
     parser.add_argument("--serve-host", type=str, default="127.0.0.1", help="REST 服务监听地址")
     parser.add_argument("--serve-port", type=int, default=8000, help="REST 服务监听端口")
+    subparsers = parser.add_subparsers(dest="command")
+    pipeline_parser = subparsers.add_parser("pipeline", help="Run the analysis pipeline")
+    pipeline_subparsers = pipeline_parser.add_subparsers(dest="pipeline_command")
+
+    pipeline_run = pipeline_subparsers.add_parser("run", help="Run the full analysis pipeline")
+    pipeline_run.add_argument("--urls-file", type=str, default=None, help="Text file containing URLs")
+    pipeline_run.add_argument("--scope", choices=["all"], default=None, help="Process all DB videos")
+    pipeline_run.add_argument("--limit", type=int, default=0, help="Limit DB videos when using --scope all")
+
+    pipeline_prepare = pipeline_subparsers.add_parser("prepare", help="Prepare analysis candidates")
+    pipeline_prepare.add_argument("--scope", choices=["all"], required=True, help="Candidate scope")
+    pipeline_prepare.add_argument("--limit", type=int, default=0, help="Limit DB videos for smoke tests")
+
+    for stage in ("frames", "classify", "export", "organize", "resume"):
+        stage_parser = pipeline_subparsers.add_parser(stage, help=f"Run pipeline stage: {stage}")
+        stage_parser.add_argument("--run-id", required=True, help="Analysis run id")
+
+    pipeline_list = pipeline_subparsers.add_parser("list", help="List analysis runs")
+    pipeline_continue = pipeline_subparsers.add_parser("continue", help="Auto-resume the latest unfinished run")
+    pipeline_retry = pipeline_subparsers.add_parser("retry", help="Retry failed items then resume")
+    pipeline_retry.add_argument("--run-id", default=None, help="Analysis run id (default: latest unfinished)")
     try:
         from __init__ import __version__
     except ImportError:

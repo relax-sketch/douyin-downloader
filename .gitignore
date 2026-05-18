@@ -33,7 +33,13 @@ logs/
 # Runtime output
 Downloaded/
 Transcripts/
+Classified/
+Analysis/grids/
+Analysis/frames/
+Analysis/csv/
+Analysis/__pycache__/
 dy_downloader.db
+dy_downloader.db-*
 *.db
 *.sqlite
 *.sqlite3
@@ -41,6 +47,7 @@ dy_downloader.db
 # Local config/secrets
 config*.yml
 !config.example.yml
+!config.yml
 .cookies.json
 config/cookies.json
 .omx/
@@ -51,3 +58,9 @@ config/cookies.json
 .vscode/
 .omc/
 .gstack/
+
+# Task docs
+findings.md
+progress.md
+task_plan.md
+batch_compare_5_vs_10.json

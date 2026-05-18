@@ -238,16 +238,16 @@ class ProgressDisplay:
         self._active_console().print(table)
 
     def print_info(self, message: str):
-        self._active_console().print(f"[blue]ℹ[/blue] {message}")
+        self._active_console().print(f"[blue]INFO[/blue] {message}")
 
     def print_success(self, message: str):
-        self._active_console().print(f"[green]✓[/green] {message}")
+        self._active_console().print(f"[green]OK[/green] {message}")
 
     def print_warning(self, message: str):
-        self._active_console().print(f"[yellow]⚠[/yellow] {message}")
+        self._active_console().print(f"[yellow]WARN[/yellow] {message}")
 
     def print_error(self, message: str):
-        self._active_console().print(f"[red]✗[/red] {message}")
+        self._active_console().print(f"[red]ERR[/red] {message}")
 
     def _cleanup_url_tasks(self):
         if not self._progress:

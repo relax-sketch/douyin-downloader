@@ -5,3 +5,4 @@ rich>=13.7.0
 pyyaml>=6.0.1
 python-dateutil>=2.8.2
 gmssl>=3.2.2
+Pillow>=10.0.0

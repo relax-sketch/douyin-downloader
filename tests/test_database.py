@@ -90,6 +90,61 @@ async def test_database_transcript_job_upsert(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_database_analysis_lifecycle(tmp_path):
+    db_path = tmp_path / "test.db"
+    database = Database(str(db_path))
+    await database.initialize()
+
+    await database.create_analysis_run(
+        run_id="run-1",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "run-1",
+        [
+            {
+                "aweme_id": "123",
+                "author_name": "Author",
+                "video_path": "/tmp/demo.mp4",
+            }
+        ],
+    )
+    await database.update_analysis_item_stage(
+        "run-1",
+        "123",
+        stage="frames",
+        status="success",
+        extra_updates={"grid_path": "/tmp/grid.jpg"},
+    )
+    await database.upsert_analysis_scores("run-1", "123", {"artsy": 8})
+    await database.update_analysis_item_stage(
+        "run-1",
+        "123",
+        stage="classify",
+        status="success",
+    )
+    rows = await database.get_analysis_export_rows("run-1")
+
+    assert rows == [
+        {
+            "aweme_id": "123",
+            "author_name": "Author",
+            "video_path": "/tmp/demo.mp4",
+            "grid_path": "/tmp/grid.jpg",
+            "organize_status": "pending",
+            "scores": {"artsy": 8},
+        }
+    ]
+
+    await database.mark_analysis_exported("run-1", "/tmp/run-1.csv")
+    run = await database.get_analysis_run("run-1")
+    assert run["csv_path"] == "/tmp/run-1.csv"
+
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_database_initialize_sets_wal_journal_mode(tmp_path):
     db_path = tmp_path / "test.db"
     database = Database(str(db_path))

@@ -172,6 +172,7 @@ class ConfigLoader:
         "comments",
         "live",
         "transcript",
+        "analysis",
         "notifications",
     )
 
