@@ -9,10 +9,30 @@ import aiohttp
 from PIL import Image
 
 from analysis.config import AttributeDefinition
+from analysis.frames import _fit_if_oversized
 from control import RateLimiter, RetryHandler
 from utils.logger import setup_logger
 
 logger = setup_logger("AnalysisProvider")
+
+
+class ProviderResponseError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        response_text: str = "",
+        request_bytes: int = 0,
+    ):
+        super().__init__(message)
+        self.status = status
+        self.response_text = response_text or ""
+        self.request_bytes = int(request_bytes or 0)
+
+
+def response_text_from_error(exc: Exception) -> str:
+    return str(getattr(exc, "response_text", "") or "")
 
 
 class VisionProvider:
@@ -45,9 +65,12 @@ class OpenAICompatibleVisionProvider(VisionProvider):
         rate_limit: float = 1,
         retry_times: int = 3,
         retry_max_total_seconds: float = 600,
+        debug_stop_on_api_error: bool = False,
         preprocess_enabled: bool = True,
         preprocess_jpeg_quality: int = 90,
         preprocess_optimize: bool = True,
+        retry_scale_factor: float = 0.6,
+        retry_jpeg_quality_factor: float = 0.9,
     ):
         self.base_url = str(base_url or "").rstrip("/")
         self.model = str(model or "").strip()
@@ -59,9 +82,12 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             max_retries=int(retry_times or 0),
             max_total_seconds=float(retry_max_total_seconds) if retry_max_total_seconds else None,
         )
+        self.debug_stop_on_api_error = bool(debug_stop_on_api_error)
         self.preprocess_enabled = bool(preprocess_enabled)
         self.preprocess_jpeg_quality = int(preprocess_jpeg_quality)
         self.preprocess_optimize = bool(preprocess_optimize)
+        self.retry_scale_factor = float(retry_scale_factor or 0.6)
+        self.retry_jpeg_quality_factor = float(retry_jpeg_quality_factor or 0.9)
 
     async def score(
         self,
@@ -73,6 +99,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             await self.rate_limiter.acquire()
             return await self._score_once(image_path, attributes, prompt)
 
+        if self.debug_stop_on_api_error:
+            return await _task()
         return await self.retry_handler.execute_with_retry(_task)
 
     async def batch_score(
@@ -85,6 +113,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             await self.rate_limiter.acquire()
             return await self._batch_score_once(image_paths, video_ids, prompt)
 
+        if self.debug_stop_on_api_error:
+            return await _task()
         return await self.retry_handler.execute_with_retry(_task)
 
     async def _score_once(
@@ -117,6 +147,7 @@ class OpenAICompatibleVisionProvider(VisionProvider):
                 }
             ],
         }
+        request_bytes = self._request_json_bytes(request_payload)
 
         headers = {"Content-Type": "application/json"}
         token = self._resolve_api_key()
@@ -128,13 +159,24 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             async with session.post(endpoint, json=request_payload, headers=headers) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise RuntimeError(
-                        f"vision provider failed: status={response.status}, body={body}"
+                    raise ProviderResponseError(
+                        f"vision provider failed: status={response.status}",
+                        status=response.status,
+                        response_text=body,
+                        request_bytes=request_bytes,
                     )
-                payload = json.loads(body)
-        content = payload["choices"][0]["message"]["content"]
-        raw_scores = json.loads(content) if isinstance(content, str) else content
-        return self._validate_scores(raw_scores, attributes)
+                try:
+                    payload = json.loads(body)
+                    content = payload["choices"][0]["message"]["content"]
+                    raw_scores = json.loads(content) if isinstance(content, str) else content
+                    return self._validate_scores(raw_scores, attributes)
+                except Exception as exc:
+                    raise ProviderResponseError(
+                        f"vision provider returned invalid response: {exc}",
+                        status=response.status,
+                        response_text=body,
+                        request_bytes=request_bytes,
+                    ) from exc
 
     async def _batch_score_once(
         self,
@@ -167,6 +209,7 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             "temperature": 0,
             "messages": [{"role": "user", "content": content}],
         }
+        request_bytes = self._request_json_bytes(request_payload)
 
         headers = {"Content-Type": "application/json"}
         token = self._resolve_api_key()
@@ -178,13 +221,24 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             async with session.post(endpoint, json=request_payload, headers=headers) as response:
                 body = await response.text()
                 if response.status != 200:
-                    raise RuntimeError(
-                        f"vision provider failed: status={response.status}, body={body}"
+                    raise ProviderResponseError(
+                        f"vision provider failed: status={response.status}",
+                        status=response.status,
+                        response_text=body,
+                        request_bytes=request_bytes,
                     )
-                payload = json.loads(body)
-        raw_content = payload["choices"][0]["message"]["content"]
-        raw_results = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-        return self._validate_batch_results(raw_results, video_ids)
+                try:
+                    payload = json.loads(body)
+                    raw_content = payload["choices"][0]["message"]["content"]
+                    raw_results = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+                    return self._validate_batch_results(raw_results, video_ids)
+                except Exception as exc:
+                    raise ProviderResponseError(
+                        f"vision provider returned invalid response: {exc}",
+                        status=response.status,
+                        response_text=body,
+                        request_bytes=request_bytes,
+                    ) from exc
 
     def _resolve_api_key(self) -> str:
         if self.api_key_env:
@@ -193,22 +247,66 @@ class OpenAICompatibleVisionProvider(VisionProvider):
                 return env_value
         return self.api_key
 
-    def _to_data_url(self, image_path: Path, compress_level: int = 0) -> str:
+    def describe_images(self, image_paths: List[Path], compress_level: int = 0) -> List[Dict[str, object]]:
+        diagnostics: List[Dict[str, object]] = []
+        for image_path in image_paths:
+            path = Path(image_path)
+            file_bytes = path.stat().st_size if path.exists() else 0
+            width = None
+            height = None
+            try:
+                with Image.open(path) as image:
+                    width, height = image.size
+            except Exception:
+                pass
+            payload_bytes = len(self._image_payload_bytes(path, compress_level)) if path.exists() else 0
+            diagnostics.append(
+                {
+                    "path": str(path),
+                    "file_bytes": file_bytes,
+                    "payload_bytes": payload_bytes,
+                    "width": width,
+                    "height": height,
+                }
+            )
+        return diagnostics
+
+    def _image_payload_bytes(self, image_path: Path, compress_level: int = 0) -> bytes:
         if not Path(image_path).exists():
             raise FileNotFoundError(f"grid image not found: {image_path}")
         if self.preprocess_enabled:
-            img = Image.open(image_path)
+            with Image.open(image_path) as source:
+                img = source.copy()
+            img = _fit_if_oversized(img)
+            scale_factor, quality = self._retry_transform(compress_level)
+            if scale_factor != 1:
+                img = img.resize(
+                    (
+                        max(1, round(img.width * scale_factor)),
+                        max(1, round(img.height * scale_factor)),
+                    ),
+                    Image.Resampling.LANCZOS,
+                )
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=self.preprocess_jpeg_quality, optimize=self.preprocess_optimize)
-            for _ in range(compress_level):
-                buf.seek(0)
-                img = Image.open(buf)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=self.preprocess_jpeg_quality, optimize=self.preprocess_optimize)
-            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            img.save(buf, format="JPEG", quality=quality, optimize=self.preprocess_optimize)
+            return buf.getvalue()
         else:
-            encoded = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+            return Path(image_path).read_bytes()
+
+    def _retry_transform(self, compress_level: int) -> tuple[float, int]:
+        if compress_level <= 0:
+            return 1.0, self.preprocess_jpeg_quality
+        scale_factor = self.retry_scale_factor
+        quality = max(1, min(95, round(self.preprocess_jpeg_quality * self.retry_jpeg_quality_factor)))
+        return scale_factor, quality
+
+    def _to_data_url(self, image_path: Path, compress_level: int = 0) -> str:
+        encoded = base64.b64encode(self._image_payload_bytes(image_path, compress_level)).decode("ascii")
         return f"data:image/jpeg;base64,{encoded}"
+
+    @staticmethod
+    def _request_json_bytes(payload: Dict[str, object]) -> int:
+        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
     @staticmethod
     def _validate_scores(raw_scores, attributes: List[AttributeDefinition]) -> Dict[str, int]:
@@ -276,7 +374,12 @@ def build_provider(provider_config: Dict[str, object]) -> VisionProvider:
         rate_limit=float(provider_config.get("rate_limit") or 1),
         retry_times=int(provider_config.get("retry_times") or 0),
         retry_max_total_seconds=float(provider_config.get("retry_max_total_seconds") or 0) or None,
+        debug_stop_on_api_error=bool(provider_config.get("debug_stop_on_api_error", False)),
         preprocess_enabled=bool(preprocess.get("enabled") if isinstance(preprocess, dict) else True),
         preprocess_jpeg_quality=int(preprocess.get("jpeg_quality", 90) if isinstance(preprocess, dict) else 90),
         preprocess_optimize=bool(preprocess.get("optimize", True) if isinstance(preprocess, dict) else True),
+        retry_scale_factor=float(preprocess.get("retry_scale_factor", 0.6) if isinstance(preprocess, dict) else 0.6),
+        retry_jpeg_quality_factor=float(
+            preprocess.get("retry_jpeg_quality_factor", 0.9) if isinstance(preprocess, dict) else 0.9
+        ),
     )

@@ -49,7 +49,7 @@ analysis:
   output_dir: ./Analysis/
   classified_dir: ./Classified/
   prompt_file: 提示词.md
-  batch_size: 8
+  batch_size: 9
   allow_partial_batch: true
   frame_count: 9
   grid_rows: 3
@@ -71,17 +71,20 @@ analysis:
   provider:
     type: openai_compatible
     base_url: https://api.ttk.homes/v1
-    model: gemini-3-flash-preview-cli
+    model: gemini-3-flash-preview-假流式
     api_key_env: OPENAI_API_KEY
     api_key: sk-JkqZoYVSSCQWrsHFRfc3D4TNFmYtUyKVrblRYmARvomsOfn1
     timeout: 120
     rate_limit: 1
     retry_times: 3
+    debug_stop_on_api_error: true
     retry_max_total_seconds: 600
     image_preprocess:
       enabled: true
       jpeg_quality: 90
       optimize: true
+      retry_scale_factor: 0.6
+      retry_jpeg_quality_factor: 0.9
   buckets:
   - label: 低
     min_score: 1

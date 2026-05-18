@@ -1,3 +1,3 @@
-from .pipeline import AnalysisPipeline
+from .pipeline import AnalysisDebugStop, AnalysisPipeline
 
-__all__ = ["AnalysisPipeline"]
+__all__ = ["AnalysisDebugStop", "AnalysisPipeline"]

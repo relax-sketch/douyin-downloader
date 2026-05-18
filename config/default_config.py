@@ -111,6 +111,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "timeout": 120,
             "rate_limit": 1,
             "retry_times": 3,
+            "debug_stop_on_api_error": False,
+            "image_preprocess": {
+                "enabled": True,
+                "jpeg_quality": 90,
+                "optimize": True,
+                "retry_scale_factor": 0.6,
+                "retry_jpeg_quality_factor": 0.9,
+            },
         },
         "buckets": [
             {"label": "低", "min_score": 0, "max_score": 3},

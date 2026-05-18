@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from analysis import AnalysisPipeline
+from analysis import AnalysisDebugStop, AnalysisPipeline
 from auth import CookieManager
 from cli.pipeline_progress_display import PipelineProgressDisplay
 from cli.progress_display import ProgressDisplay
@@ -603,6 +603,10 @@ def main():
     except KeyboardInterrupt:
         display.print_warning("\nDownload interrupted by user")
         sys.exit(0)
+    except AnalysisDebugStop as exc:
+        display.print_error("调试模式：模型 API 报错，流水线已停止")
+        display.console.print(exc.report, markup=False)
+        sys.exit(1)
     except Exception as e:
         display.print_error(f"Fatal error: {e}")
         logger.exception("Fatal error occurred")

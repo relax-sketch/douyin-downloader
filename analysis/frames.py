@@ -8,6 +8,9 @@ from utils.logger import setup_logger
 
 logger = setup_logger("AnalysisFrames")
 
+OVERSIZED_GRID_THRESHOLD = 4_000
+OVERSIZED_GRID_TARGET_MAX_SIDE = 4_000
+
 
 class FFmpegFrameExtractor:
     def __init__(self, ffmpeg_path: Optional[str] = None, ffprobe_path: Optional[str] = None):
@@ -111,9 +114,30 @@ class GridBuilder:
                 x = (index % cols) * width
                 y = (index // cols) * height
                 canvas.paste(image, (x, y))
+            canvas = _fit_if_oversized(canvas)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             canvas.save(output_path, format="JPEG", quality=95)
             return output_path
         finally:
             for image in images:
                 image.close()
+
+
+def _fit_if_oversized(image):
+    from PIL import Image
+
+    width, height = image.size
+    max_side = max(width, height)
+    if max_side <= OVERSIZED_GRID_THRESHOLD:
+        return image
+    scale = OVERSIZED_GRID_TARGET_MAX_SIDE / max_side
+    resized = image.resize(
+        (
+            max(1, round(width * scale)),
+            max(1, round(height * scale)),
+        ),
+        Image.Resampling.LANCZOS,
+    )
+    if resized is not image:
+        image.close()
+    return resized

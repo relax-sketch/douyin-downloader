@@ -75,7 +75,7 @@ analysis:
   output_dir: ./Analysis/
   classified_dir: ./Classified/
   prompt_file: ""          # 可选：外部提示词模板文件；启用批处理时会填充 {video_id_1}...
-  batch_size: 1             # 1 = 单视频单次调用；如需一次送 5 个视频可改为 5
+  batch_size: 1             # 1 = 单视频单次调用；如需一次送 9 个视频可改为 9
   allow_partial_batch: false # 尾批不足 batch_size 时是否也执行
   frame_count: 9
   grid_rows: 3
@@ -116,6 +116,13 @@ analysis:
     timeout: 120
     rate_limit: 1
     retry_times: 3
+    debug_stop_on_api_error: false # true = 任一模型 API 报错时立刻停下并打印请求/图片诊断
+    image_preprocess:
+      enabled: true
+      jpeg_quality: 90
+      optimize: true
+      retry_scale_factor: 0.6         # 首次失败后的重试：长宽等比缩到 60%
+      retry_jpeg_quality_factor: 0.9  # 首次失败后的重试：JPEG 质量再乘 0.9
   buckets:
     - label: 低
       min_score: 0

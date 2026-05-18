@@ -138,6 +138,26 @@ class PipelineProgressDisplay:
             return
         self._progress.update(self._stage_task_ids[stage], detail=detail)
 
+    def update_stage_attempt(
+        self,
+        stage: str,
+        *,
+        batch_index: int,
+        total_batches: int,
+        attempt: int,
+        total_attempts: int,
+        status: str,
+        detail: str = "",
+    ) -> None:
+        parts = [
+            f"批次 {batch_index}/{total_batches}",
+            f"尝试 {attempt}/{total_attempts}",
+            status,
+        ]
+        if detail:
+            parts.append(detail)
+        self.update_stage_detail(stage, " · ".join(parts))
+
     def advance_stage_item(self, stage: str, status: str, detail: str = "") -> None:
         if not self._progress or stage not in self._stage_task_ids:
             return

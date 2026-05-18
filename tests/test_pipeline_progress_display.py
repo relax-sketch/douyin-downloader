@@ -66,3 +66,28 @@ def test_pipeline_progress_tracks_stage_and_overall_counts(monkeypatch):
     assert fake_progress.tasks[classify_task_id]["completed"] == 1
     assert fake_progress.tasks[overall_task_id]["completed"] == 2
 
+
+def test_pipeline_progress_formats_attempt_detail(monkeypatch):
+    display = PipelineProgressDisplay()
+    fake_progress = _FakeProgress()
+    fake_ctx = _FakeProgressContext(fake_progress)
+    monkeypatch.setattr(display, "create_progress", lambda: fake_ctx)
+
+    display.start_pipeline("run-1", ("classify",))
+    display.start_stage("classify", 5)
+    task_id = display._stage_task_ids["classify"]
+
+    display.update_stage_attempt(
+        "classify",
+        batch_index=2,
+        total_batches=6,
+        attempt=3,
+        total_attempts=4,
+        status="失败，等待重试",
+        detail='回应：{"error":"busy"} · 5s 后第 4/4 次',
+    )
+
+    assert (
+        fake_progress.tasks[task_id]["detail"]
+        == '批次 2/6 · 尝试 3/4 · 失败，等待重试 · 回应：{"error":"busy"} · 5s 后第 4/4 次'
+    )

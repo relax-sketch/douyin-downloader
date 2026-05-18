@@ -14,17 +14,57 @@ from analysis.discovery import CandidateDiscovery
 from analysis.exporter import CsvExporter
 from analysis.frames import FFmpegFrameExtractor, GridBuilder
 from analysis.organizer import ClassifiedOrganizer
-from analysis.provider import VisionProvider, build_provider
+from analysis.provider import (
+    ProviderResponseError,
+    VisionProvider,
+    build_provider,
+    response_text_from_error,
+)
 from storage import Database, FileManager
 from utils.logger import setup_logger
 
 logger = setup_logger("AnalysisPipeline")
 
 
+def _failed_response_detail(exc: Exception) -> str:
+    response_text = " ".join(response_text_from_error(exc).split())
+    return f"回应：{response_text or '空'}"
+
+
+def _format_bytes(value: int) -> str:
+    size = float(value or 0)
+    units = ["B", "KB", "MB", "GB"]
+    unit = units[0]
+    for candidate in units:
+        unit = candidate
+        if size < 1024 or candidate == units[-1]:
+            break
+        size /= 1024
+    return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+
+
+class AnalysisDebugStop(RuntimeError):
+    def __init__(self, report: str):
+        super().__init__("debug mode stopped after provider API error")
+        self.report = report
+
+
 class AnalysisProgressReporter(Protocol):
     def start_stage(self, stage: str, total: int, detail: str = "") -> None: ...
 
     def update_stage_detail(self, stage: str, detail: str) -> None: ...
+
+    def update_stage_attempt(
+        self,
+        stage: str,
+        *,
+        batch_index: int,
+        total_batches: int,
+        attempt: int,
+        total_attempts: int,
+        status: str,
+        detail: str = "",
+    ) -> None: ...
 
     def advance_stage_item(self, stage: str, status: str, detail: str = "") -> None: ...
 
@@ -55,6 +95,8 @@ class AnalysisPipeline:
         self.prompt = build_prompt(raw_config, self.attributes)
         self.batch_size = max(1, int(self.cfg.get("batch_size") or 1))
         self.allow_partial_batch = bool(self.cfg.get("allow_partial_batch", False))
+        provider_cfg = self.cfg.get("provider") or {}
+        self.debug_stop_on_api_error = bool(provider_cfg.get("debug_stop_on_api_error", False))
         self.frame_count = max(1, int(self.cfg.get("frame_count") or 9))
         self.grid_rows = max(1, int(self.cfg.get("grid_rows") or 3))
         self.grid_cols = max(1, int(self.cfg.get("grid_cols") or 3))
@@ -157,6 +199,14 @@ class AnalysisPipeline:
                     if self.progress_reporter:
                         self.progress_reporter.advance_stage_item("classify", "success", str(aweme_id))
                 except Exception as exc:
+                    self._raise_debug_stop_if_needed(
+                        exc,
+                        image_paths=[Path(item["grid_path"])],
+                        video_ids=[str(aweme_id)],
+                        batch_index=1,
+                        total_batches=len(items),
+                        compress_level=0,
+                    )
                     logger.warning("Classification failed for %s: %s", aweme_id, exc)
                     await self.database.update_analysis_item_stage(
                         run_id,
@@ -200,10 +250,15 @@ class AnalysisPipeline:
         )
         for start in range(0, len(processable_items), self.batch_size):
             batch = processable_items[start : start + self.batch_size]
+            batch_index = (start // self.batch_size) + 1
             if self.progress_reporter:
-                batch_index = (start // self.batch_size) + 1
                 self.progress_reporter.start_batch_timer("classify")
-            await self._classify_batch(run_id, batch)
+            await self._classify_batch(
+                run_id,
+                batch,
+                batch_index=batch_index,
+                total_batches=total_batches,
+            )
             if self.progress_reporter:
                 batch_time = self.progress_reporter.record_batch_time("classify")
                 avg = self.progress_reporter.avg_batch_time("classify")
@@ -219,7 +274,14 @@ class AnalysisPipeline:
             )
             self.progress_reporter.finish_stage("classify", detail)
 
-    async def _classify_batch(self, run_id: str, batch: List[Dict[str, object]]) -> None:
+    async def _classify_batch(
+        self,
+        run_id: str,
+        batch: List[Dict[str, object]],
+        *,
+        batch_index: int = 1,
+        total_batches: int = 1,
+    ) -> None:
         import asyncio
 
         real_video_ids = [str(item["aweme_id"]) for item in batch]
@@ -227,9 +289,19 @@ class AnalysisPipeline:
         max_retries = self.provider.retry_handler.max_retries
         delays = self.provider.retry_handler.retry_delays
         last_error = None
+        total_attempts = max_retries + 1
 
         for attempt in range(max_retries + 1):
             try:
+                if self.progress_reporter:
+                    self.progress_reporter.update_stage_attempt(
+                        "classify",
+                        batch_index=batch_index,
+                        total_batches=total_batches,
+                        attempt=attempt + 1,
+                        total_attempts=total_attempts,
+                        status="请求中",
+                    )
                 await self.provider.rate_limiter.acquire()
                 prompt = render_batch_prompt(self.raw_config, real_video_ids)
                 results = await self.provider._batch_score_once(
@@ -251,9 +323,26 @@ class AnalysisPipeline:
                     )
                     if self.progress_reporter:
                         self.progress_reporter.advance_stage_item("classify", "success", aweme_id)
+                if self.progress_reporter:
+                    self.progress_reporter.update_stage_attempt(
+                        "classify",
+                        batch_index=batch_index,
+                        total_batches=total_batches,
+                        attempt=attempt + 1,
+                        total_attempts=total_attempts,
+                        status="成功",
+                    )
                 return
             except Exception as exc:
                 last_error = exc
+                self._raise_debug_stop_if_needed(
+                    exc,
+                    image_paths=image_paths,
+                    video_ids=real_video_ids,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    compress_level=attempt,
+                )
                 if attempt == max_retries:
                     break
                 # Before last retry: drop largest image, mark it failed
@@ -280,9 +369,29 @@ class AnalysisPipeline:
                     "Batch classify attempt %d/%d failed (%s), compress_level=%d, retrying in %ds...",
                     attempt + 1, max_retries + 1, exc, attempt, delay,
                 )
+                if self.progress_reporter:
+                    self.progress_reporter.update_stage_attempt(
+                        "classify",
+                        batch_index=batch_index,
+                        total_batches=total_batches,
+                        attempt=attempt + 1,
+                        total_attempts=total_attempts,
+                        status="失败，等待重试",
+                        detail=f"{_failed_response_detail(exc)} · {delay}s 后第 {attempt + 2}/{total_attempts} 次",
+                    )
                 await asyncio.sleep(delay)
 
         logger.warning("Batch classification exhausted for %s: %s", real_video_ids, last_error)
+        if self.progress_reporter:
+            self.progress_reporter.update_stage_attempt(
+                "classify",
+                batch_index=batch_index,
+                total_batches=total_batches,
+                attempt=total_attempts,
+                total_attempts=total_attempts,
+                status="失败",
+                detail=_failed_response_detail(last_error),
+            )
         for item in batch:
             await self.database.update_analysis_item_stage(
                 run_id, str(item["aweme_id"]), stage="classify",
@@ -290,6 +399,95 @@ class AnalysisPipeline:
             )
             if self.progress_reporter:
                 self.progress_reporter.advance_stage_item("classify", "failed", str(item["aweme_id"]))
+
+    def _raise_debug_stop_if_needed(
+        self,
+        exc: Exception,
+        *,
+        image_paths: List[Path],
+        video_ids: List[str],
+        batch_index: int,
+        total_batches: int,
+        compress_level: int,
+    ) -> None:
+        if not self.debug_stop_on_api_error or not isinstance(exc, ProviderResponseError):
+            return
+        raise AnalysisDebugStop(
+            self._build_debug_report(
+                exc,
+                image_paths=image_paths,
+                video_ids=video_ids,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                compress_level=compress_level,
+            )
+        ) from exc
+
+    def _build_debug_report(
+        self,
+        exc: ProviderResponseError,
+        *,
+        image_paths: List[Path],
+        video_ids: List[str],
+        batch_index: int,
+        total_batches: int,
+        compress_level: int,
+    ) -> str:
+        diagnostics = self._collect_image_diagnostics(image_paths, compress_level)
+        total_file_bytes = sum(int(item.get("file_bytes") or 0) for item in diagnostics)
+        total_payload_bytes = sum(int(item.get("payload_bytes") or 0) for item in diagnostics)
+        response_text = response_text_from_error(exc) or "空"
+        lines = [
+            "调试模式：模型 API 报错，流水线已停止",
+            f"失败原因：{exc}",
+            f"HTTP 状态：{exc.status if exc.status is not None else '空'}",
+            f"失败回应：{response_text}",
+            f"批次：{batch_index}/{total_batches}",
+            f"压缩级别：{compress_level}",
+            f"请求 JSON 大小：{_format_bytes(exc.request_bytes)}",
+            f"图片数：{len(diagnostics)}",
+            f"图片文件总大小：{_format_bytes(total_file_bytes)}",
+            f"预处理后图片总大小：{_format_bytes(total_payload_bytes)}",
+            "图片明细：",
+        ]
+        for video_id, item in zip(video_ids, diagnostics):
+            width = item.get("width")
+            height = item.get("height")
+            resolution = f"{width}x{height}" if width and height else "未知"
+            lines.append(
+                "  - "
+                f"{video_id}: "
+                f"文件={_format_bytes(int(item.get('file_bytes') or 0))}, "
+                f"预处理后={_format_bytes(int(item.get('payload_bytes') or 0))}, "
+                f"分辨率={resolution}, "
+                f"路径={item.get('path')}"
+            )
+        return "\n".join(lines)
+
+    def _collect_image_diagnostics(
+        self,
+        image_paths: List[Path],
+        compress_level: int,
+    ) -> List[Dict[str, object]]:
+        describe_images = getattr(self.provider, "describe_images", None)
+        if callable(describe_images):
+            try:
+                return describe_images(image_paths, compress_level=compress_level)
+            except Exception:
+                pass
+        diagnostics: List[Dict[str, object]] = []
+        for image_path in image_paths:
+            path = Path(image_path)
+            diagnostics.append(
+                {
+                    "path": str(path),
+                    "file_bytes": path.stat().st_size if path.exists() else 0,
+                    "payload_bytes": 0,
+                    "width": None,
+                    "height": None,
+                }
+            )
+        return diagnostics
 
     async def run_export(self, run_id: str) -> Path:
         if self.progress_reporter:
