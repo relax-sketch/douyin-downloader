@@ -26,6 +26,21 @@
       <article class="card glass">
         <div class="card-head">
           <div>
+            <p class="eyebrow">Download</p>
+            <h2>下载博主 / 链接</h2>
+          </div>
+          <button id="downloadBtn" class="primary">开始下载</button>
+        </div>
+        <label class="download-box">博主主页、视频或合集链接（一行一个）
+          <textarea id="downloadUrls" placeholder="https://www.douyin.com/user/...\nhttps://v.douyin.com/..."></textarea>
+        </label>
+        <p class="subtle">这里会创建下载任务；下载完后再运行下面的分析流水线。</p>
+        <div id="downloadJobs" class="job-detail"></div>
+      </article>
+
+      <article class="card glass">
+        <div class="card-head">
+          <div>
             <p class="eyebrow">Overview</p>
             <h2>当前进度</h2>
           </div>

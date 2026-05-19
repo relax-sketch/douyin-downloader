@@ -152,10 +152,11 @@ class ConfigLoader:
     # Keys that the desktop Settings UI lets the user edit. ``save()`` writes
     # these back to the YAML config so changes survive a sidecar restart.
     # Kept explicit rather than dumping everything so we don't accidentally
-    # persist runtime/secret values (cookies, links, etc.) that should stay
+    # persist runtime/secret values (cookies, etc.) that should stay
     # out of the on-disk config, and so fields the user added manually to
     # their config.yml are left untouched.
     _UI_PERSISTED_KEYS = (
+        "link",
         "path",
         "thread",
         "rate_limit",

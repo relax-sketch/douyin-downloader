@@ -150,6 +150,8 @@ def test_settings_endpoint_round_trips_safe_fields_without_api_key(tmp_path):
     config_path.write_text(
         """
 path: ./Downloaded
+link:
+  - https://example.test/old
 thread: 2
 analysis:
   batch_size: 1
@@ -166,6 +168,7 @@ analysis:
         settings = client.get("/api/v1/settings")
         assert settings.status_code == 200
         data = settings.json()
+        assert data["settings"]["link"] == ["https://example.test/old"]
         assert data["secrets"]["analysis.provider.api_key"] is True
         assert "api_key" not in data["settings"]["analysis"]["provider"]
 
@@ -174,6 +177,7 @@ analysis:
             json={
                 "settings": {
                     "thread": 7,
+                    "link": "https://example.test/user/one\nhttps://example.test/user/two\n",
                     "analysis": {
                         "batch_size": 9,
                         "provider": {"model": "new-model", "api_key": "leak-attempt"},
@@ -183,12 +187,17 @@ analysis:
         )
         assert resp.status_code == 200
         assert config.get("thread") == 7
+        assert config.get("link") == [
+            "https://example.test/user/one",
+            "https://example.test/user/two",
+        ]
         assert config.get("analysis")["batch_size"] == 9
         assert config.get("analysis")["provider"]["model"] == "new-model"
         assert config.get("analysis")["provider"]["api_key"] == "secret-key"
 
         persisted = config_path.read_text(encoding="utf-8")
         assert "new-model" in persisted
+        assert "https://example.test/user/one" in persisted
         assert "leak-attempt" not in persisted
 
 

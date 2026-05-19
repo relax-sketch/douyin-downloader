@@ -211,6 +211,7 @@ def build_app(config: ConfigLoader) -> FastAPI:
         analysis_cfg["provider"] = safe_provider
         return {
             "settings": {
+                "link": cfg.get("link", []),
                 "path": cfg.get("path"),
                 "thread": cfg.get("thread"),
                 "rate_limit": cfg.get("rate_limit"),
@@ -343,6 +344,7 @@ def build_app(config: ConfigLoader) -> FastAPI:
 def _settings_fields() -> Dict[str, str]:
     return {
         "path": "下载保存目录",
+        "link": "默认下载链接列表；可放博主主页、视频或合集链接",
         "thread": "下载并发线程数",
         "rate_limit": "接口请求限速",
         "proxy": "网络代理地址",
@@ -367,8 +369,16 @@ def _settings_fields() -> Dict[str, str]:
 
 
 def _apply_settings_patch(config: ConfigLoader, incoming: Dict[str, Any]) -> None:
-    top_level_allowed = {"path", "thread", "rate_limit", "proxy", "retry_times"}
+    top_level_allowed = {"link", "path", "thread", "rate_limit", "proxy", "retry_times"}
     scalar_updates = {k: incoming[k] for k in top_level_allowed if k in incoming}
+    if "link" in scalar_updates:
+        links = scalar_updates["link"]
+        if isinstance(links, str):
+            scalar_updates["link"] = [line.strip() for line in links.splitlines() if line.strip()]
+        elif isinstance(links, list):
+            scalar_updates["link"] = [str(item).strip() for item in links if str(item).strip()]
+        else:
+            scalar_updates["link"] = []
     if scalar_updates:
         config.update(**scalar_updates)
 

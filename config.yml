@@ -48,7 +48,7 @@ analysis:
   enabled: true
   output_dir: ./Analysis/
   classified_dir: ./Classified/
-  active_run_id: 58993136890c485691d872820a083664
+  active_run_id: ee4ffaf8eb02436ab56f79b3f406bfcb
   organize_run_id: ''
   prompt_file: 提示词.md
   batch_size: 9
@@ -138,7 +138,7 @@ server:
   max_jobs: 500
   job_ttl_seconds: 86400
 link:
-- https://v.douyin.com/b-k0uREp-3I/
+- https://v.douyin.com/O_-kJK_fVM4/
 cookies:
   __ac_nonce: 06a0aad0900e6a1c7e26a
   __ac_signature: _02B4Z6wo00f01ObO61wAAIDAaIOdaVZP0Zzm7s.AAFO-7d

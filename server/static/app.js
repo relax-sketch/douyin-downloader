@@ -1,5 +1,5 @@
 ﻿const $ = (id) => document.getElementById(id);
-const state = { settings: null, summary: null, currentJobId: null, settingsDirty: false };
+const state = { settings: null, summary: null, currentJobId: null, settingsDirty: false, downloadJobIds: [] };
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -50,6 +50,9 @@ function renderSettings(payload) {
   state.settings = payload.settings;
   const a = payload.settings.analysis || {};
   const p = a.provider || {};
+  if (!document.activeElement || document.activeElement.id !== 'downloadUrls') {
+    $('downloadUrls').value = Array.isArray(payload.settings.link) ? payload.settings.link.join('\n') : (payload.settings.link || '');
+  }
   const fields = [
     ['path','下载目录',payload.settings.path], ['thread','线程',payload.settings.thread],
     ['rate_limit','下载限速',payload.settings.rate_limit], ['proxy','代理',payload.settings.proxy || ''],
@@ -65,6 +68,7 @@ function renderSettings(payload) {
   `).join('') + `
     <label>尾批继续<select data-key="analysis.allow_partial_batch"><option value="true" ${a.allow_partial_batch ? 'selected' : ''}>true</option><option value="false" ${!a.allow_partial_batch ? 'selected' : ''}>false</option></select></label>
     <label>调试停机<select data-key="analysis.provider.debug_stop_on_api_error"><option value="true" ${p.debug_stop_on_api_error ? 'selected' : ''}>true</option><option value="false" ${!p.debug_stop_on_api_error ? 'selected' : ''}>false</option></select></label>
+    <label class="setting-wide">默认下载链接 link（一行一个）<textarea data-key="link">${Array.isArray(payload.settings.link) ? payload.settings.link.join('\n') : (payload.settings.link || '')}</textarea></label>
     <label class="setting-wide">buckets JSON<textarea data-key="analysis.buckets">${JSON.stringify(a.buckets || [], null, 2)}</textarea></label>
     <p class="subtle setting-wide">敏感字段：API Key ${payload.secrets['analysis.provider.api_key'] ? '已设置' : '未设置'}，Cookie ${payload.secrets.cookie ? '已设置' : '未设置'}。不会在页面回显。</p>`;
   document.querySelectorAll('[data-key]').forEach(el => {
@@ -81,11 +85,26 @@ function collectSettingsPatch() {
     else if (value === 'false') value = false;
     else if (['thread','retry_times','analysis.batch_size','analysis.frame_count','analysis.grid_rows','analysis.grid_cols','analysis.provider.timeout','analysis.provider.rate_limit','analysis.provider.retry_times'].includes(key)) value = Number(value || 0);
     else if (key === 'analysis.buckets') value = JSON.parse(value || '[]');
+    else if (key === 'link') value = value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (key.startsWith('analysis.provider.')) patch.analysis.provider[key.replace('analysis.provider.','')] = value;
     else if (key.startsWith('analysis.')) patch.analysis[key.replace('analysis.','')] = value;
     else patch[key] = value;
   });
   return patch;
+}
+
+function renderDownloadJobs(jobs) {
+  const chosen = state.downloadJobIds.length
+    ? jobs.filter(j => state.downloadJobIds.includes(j.job_id))
+    : jobs.slice(-5);
+  $('downloadJobs').innerHTML = chosen.reverse().map(j => `
+    <div class="stage">
+      <div class="stage-head"><strong>${j.status}</strong><code>${j.job_id}</code></div>
+      <p class="subtle">${j.url}</p>
+      <p class="subtle">total ${j.total || 0} · success ${j.success || 0} · failed ${j.failed || 0} · skipped ${j.skipped || 0}</p>
+      ${j.error ? `<p class="pill bad">${j.error}</p>` : ''}
+    </div>
+  `).join('') || '<p class="subtle">还没有下载任务。</p>';
 }
 
 function renderJob(job) {
@@ -132,11 +151,12 @@ function renderScores(data) {
 async function loadAll() {
   try {
     $('serviceStatus').textContent = '在线'; $('serviceStatus').className = 'pill good';
-    const [settings, summary, runs] = await Promise.all([
-      api('/api/v1/settings'), api('/api/v1/pipeline/summary'), api('/api/v1/pipeline/runs?limit=20')
+    const [settings, summary, runs, downloadJobs] = await Promise.all([
+      api('/api/v1/settings'), api('/api/v1/pipeline/summary'), api('/api/v1/pipeline/runs?limit=20'), api('/api/v1/jobs')
     ]);
     state.summary = summary;
     if (!state.settingsDirty) renderSettings(settings); renderOverview(summary); renderRuns(runs.runs || []);
+    renderDownloadJobs(downloadJobs.jobs || []);
     const scoreRun = summary.active_run?.run_id || summary.latest_classified_run?.run_id;
     if (scoreRun) renderScores(await api(`/api/v1/pipeline/runs/${scoreRun}/scores`));
     const activeJob = (summary.jobs || []).reverse().find(j => !['success','failed'].includes(j.status));
@@ -157,6 +177,25 @@ async function pollJob() {
 }
 
 $('refreshBtn').onclick = loadAll;
+$('downloadBtn').onclick = async () => {
+  const urls = $('downloadUrls').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  if (!urls.length) {
+    $('downloadJobs').innerHTML = '<p class="pill bad">先填一个博主/视频链接。</p>';
+    return;
+  }
+  $('downloadJobs').innerHTML = '<p class="subtle">正在创建下载任务…</p>';
+  try {
+    const jobs = [];
+    for (const url of urls) {
+      const job = await api('/api/v1/download', { method: 'POST', body: JSON.stringify({ url }) });
+      jobs.push(job);
+    }
+    state.downloadJobIds = jobs.map(j => j.job_id);
+    await loadAll();
+  } catch (err) {
+    $('downloadJobs').innerHTML = `<p class="pill bad">创建下载任务失败：${err.message}</p>`;
+  }
+};
 $('saveSettingsBtn').onclick = async () => {
   try { await api('/api/v1/settings', { method: 'PATCH', body: JSON.stringify({ settings: collectSettingsPatch() }) }); $('settingsMessage').textContent = '已保存'; await loadAll(); }
   catch (err) { $('settingsMessage').textContent = `保存失败：${err.message}`; }
