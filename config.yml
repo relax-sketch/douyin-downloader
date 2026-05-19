@@ -48,6 +48,7 @@ analysis:
   enabled: true
   output_dir: ./Analysis/
   classified_dir: ./Classified/
+  active_run_id: 58993136890c485691d872820a083664
   organize_run_id: ''
   prompt_file: 提示词.md
   batch_size: 9
@@ -78,14 +79,14 @@ analysis:
     timeout: 120
     rate_limit: 1
     retry_times: 3
-    debug_stop_on_api_error: true
-    retry_max_total_seconds: 600
+    debug_stop_on_api_error: false
     image_preprocess:
       enabled: true
       jpeg_quality: 90
       optimize: true
       retry_scale_factor: 0.9
       retry_jpeg_quality_factor: 0.95
+    retry_max_total_seconds: 600
   buckets:
   - label: 1-3
     min_score: 1

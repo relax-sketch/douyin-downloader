@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import time
 from typing import Dict
 
 import pytest
@@ -17,6 +18,8 @@ except ImportError:  # pragma: no cover
 from config import ConfigLoader
 from server.app import build_app
 from server.jobs import JobManager
+from server.pipeline_jobs import PipelineJobManager
+from storage import Database
 
 
 @pytest.mark.asyncio
@@ -129,6 +132,219 @@ def test_build_app_shares_deps_across_requests(tmp_path):
     app2 = build_app(config)
     assert app2.state.deps is not app.state.deps
     assert app.state.deps.file_manager is app.state.deps.file_manager  # identity
+
+
+def test_dashboard_home_returns_html(tmp_path):
+    config = ConfigLoader(None)
+    config.update(path=str(tmp_path), database_path=str(tmp_path / "test.db"))
+    app = build_app(config)
+
+    with TestClient(app) as client:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Pipeline Dashboard" in resp.text
+
+
+def test_settings_endpoint_round_trips_safe_fields_without_api_key(tmp_path):
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+path: ./Downloaded
+thread: 2
+analysis:
+  batch_size: 1
+  provider:
+    model: old-model
+    api_key: secret-key
+""",
+        encoding="utf-8",
+    )
+    config = ConfigLoader(str(config_path))
+    app = build_app(config)
+
+    with TestClient(app) as client:
+        settings = client.get("/api/v1/settings")
+        assert settings.status_code == 200
+        data = settings.json()
+        assert data["secrets"]["analysis.provider.api_key"] is True
+        assert "api_key" not in data["settings"]["analysis"]["provider"]
+
+        resp = client.patch(
+            "/api/v1/settings",
+            json={
+                "settings": {
+                    "thread": 7,
+                    "analysis": {
+                        "batch_size": 9,
+                        "provider": {"model": "new-model", "api_key": "leak-attempt"},
+                    },
+                }
+            },
+        )
+        assert resp.status_code == 200
+        assert config.get("thread") == 7
+        assert config.get("analysis")["batch_size"] == 9
+        assert config.get("analysis")["provider"]["model"] == "new-model"
+        assert config.get("analysis")["provider"]["api_key"] == "secret-key"
+
+        persisted = config_path.read_text(encoding="utf-8")
+        assert "new-model" in persisted
+        assert "leak-attempt" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_pipeline_summary_runs_and_scores_endpoints(tmp_path):
+    db_path = tmp_path / "analysis.db"
+    database = Database(str(db_path))
+    await database.initialize()
+    await database.create_analysis_run(run_id="run-scored", source_type="all", source_payload={"scope": "all"})
+    await database.add_analysis_items(
+        "run-scored",
+        [
+            {"aweme_id": "1", "author_name": "A", "video_path": str(tmp_path / "1.mp4")},
+            {"aweme_id": "2", "author_name": "A", "video_path": str(tmp_path / "2.mp4")},
+        ],
+    )
+    for aweme_id, score in {"1": 6, "2": 4}.items():
+        await database.update_analysis_item_stage(
+            "run-scored", aweme_id, stage="frames", status="success"
+        )
+        await database.update_analysis_item_stage(
+            "run-scored", aweme_id, stage="classify", status="success"
+        )
+        await database.upsert_analysis_scores(
+            "run-scored",
+            aweme_id,
+            {"suggestiveness_score": score, "coverage_score": 2},
+        )
+    await database.close()
+
+    config = ConfigLoader(None)
+    analysis = dict(config.get("analysis"))
+    analysis.update(
+        {
+            "active_run_id": "run-scored",
+            "primary_attribute": "suggestiveness_score",
+            "attributes": [
+                {
+                    "key": "suggestiveness_score",
+                    "label": "性暗示程度",
+                    "description": "desc",
+                    "min_score": 1,
+                    "max_score": 10,
+                },
+                {
+                    "key": "coverage_score",
+                    "label": "覆盖程度",
+                    "description": "desc",
+                    "min_score": 1,
+                    "max_score": 10,
+                },
+            ],
+            "buckets": [
+                {"label": "1-3", "min_score": 1, "max_score": 3},
+                {"label": "4", "min_score": 4, "max_score": 4},
+                {"label": "5", "min_score": 5, "max_score": 5},
+                {"label": "6+", "min_score": 6, "max_score": 10},
+            ],
+        }
+    )
+    config.update(path=str(tmp_path), database_path=str(db_path), analysis=analysis)
+    app = build_app(config)
+
+    with TestClient(app) as client:
+        summary = client.get("/api/v1/pipeline/summary")
+        assert summary.status_code == 200
+        assert summary.json()["active_run"]["run_id"] == "run-scored"
+        assert summary.json()["active_run"]["classified"] == 2
+
+        runs = client.get("/api/v1/pipeline/runs")
+        assert runs.status_code == 200
+        assert runs.json()["runs"][0]["framed"] == 2
+
+        scores = client.get("/api/v1/pipeline/runs/run-scored/scores")
+        assert scores.status_code == 200
+        body = scores.json()
+        assert body["primary_attribute"] == "suggestiveness_score"
+        assert body["distributions"]["suggestiveness_score"]["6"] == 1
+        assert {b["label"]: b["count"] for b in body["buckets"]}["6+"] == 1
+
+
+class _SlowFakePipeline:
+    def __init__(self, *, progress_reporter, **_kwargs):
+        self.progress_reporter = progress_reporter
+
+    async def resume(self, run_id):
+        self.progress_reporter.start_stage("classify", 2)
+        self.progress_reporter.update_stage_attempt(
+            "classify",
+            batch_index=1,
+            total_batches=1,
+            attempt=1,
+            total_attempts=2,
+            status="请求中",
+        )
+        await asyncio.sleep(0.15)
+        self.progress_reporter.advance_stage_item("classify", "success", "1")
+        self.progress_reporter.advance_stage_item("classify", "success", "2")
+        self.progress_reporter.finish_stage("classify")
+
+    async def run_organize(self, run_id, *, rebuild=False):
+        self.progress_reporter.start_stage("organize", 1)
+        await asyncio.sleep(0.01)
+        self.progress_reporter.advance_stage_item("organize", "success", run_id)
+        self.progress_reporter.finish_stage("organize")
+
+
+def test_pipeline_job_endpoint_runs_and_rejects_concurrent_jobs(tmp_path):
+    db_path = tmp_path / "jobs.db"
+
+    async def seed():
+        database = Database(str(db_path))
+        await database.initialize()
+        await database.create_analysis_run(run_id="run-active", source_type="all", source_payload={"scope": "all"})
+        await database.add_analysis_items(
+            "run-active",
+            [
+                {"aweme_id": "1", "author_name": "A", "video_path": str(tmp_path / "1.mp4")},
+                {"aweme_id": "2", "author_name": "A", "video_path": str(tmp_path / "2.mp4")},
+            ],
+        )
+        await database.close()
+
+    asyncio.run(seed())
+    config = ConfigLoader(None)
+    analysis = dict(config.get("analysis"))
+    analysis["active_run_id"] = "run-active"
+    config.update(path=str(tmp_path), database_path=str(db_path), analysis=analysis)
+    app = build_app(config)
+    app.state.pipeline_job_manager = PipelineJobManager(
+        config=config,
+        db_path=str(db_path),
+        pipeline_factory=_SlowFakePipeline,
+    )
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/pipeline/jobs", json={"action": "continue"})
+        assert first.status_code == 200
+        job_id = first.json()["job_id"]
+
+        second = client.post("/api/v1/pipeline/jobs", json={"action": "retry"})
+        assert second.status_code == 409
+
+        deadline = time.time() + 3
+        detail = {}
+        while time.time() < deadline:
+            resp = client.get(f"/api/v1/pipeline/jobs/{job_id}")
+            assert resp.status_code == 200
+            detail = resp.json()
+            if detail["status"] in {"success", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert detail["status"] == "success"
+        assert detail["stages"]["classify"]["completed"] == 2
+        assert detail["stages"]["classify"]["attempt"]["status"] == "请求中"
 
 
 @pytest.mark.asyncio

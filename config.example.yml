@@ -74,6 +74,7 @@ analysis:
   enabled: false
   output_dir: ./Analysis/
   classified_dir: ./Classified/
+  active_run_id: ""         # 主流水线默认续跑的 run；留空时自动选择进度最高的未完成 run，并写回这里
   organize_run_id: ""       # 归类复制默认使用的 run；留空时首次自动选择最新已评分 run，并写回这里
   prompt_file: ""          # 可选：外部提示词模板文件；启用批处理时会填充 {video_id_1}...
   batch_size: 1             # 1 = 单视频单次调用；如需一次送 9 个视频可改为 9

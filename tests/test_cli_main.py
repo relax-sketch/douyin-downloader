@@ -114,3 +114,95 @@ def test_remember_organize_run_persists_to_yaml(tmp_path):
 
     written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert written["analysis"]["organize_run_id"] == "run-123"
+
+
+def test_remember_active_run_persists_to_yaml(tmp_path):
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("analysis:\n  active_run_id: ''\n", encoding="utf-8")
+    config = main_module.ConfigLoader(str(config_path))
+
+    main_module._remember_active_run(config, "run-456")
+
+    written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert written["analysis"]["active_run_id"] == "run-456"
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_run_prefers_yaml_anchor_over_more_advanced_run(tmp_path):
+    database = main_module.Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    await database.create_analysis_run(
+        run_id="active-low-progress",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "active-low-progress",
+        [{"aweme_id": "1", "author_name": "Author", "video_path": "/tmp/1.mp4"}],
+    )
+    await database.create_analysis_run(
+        run_id="fallback-high-progress",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "fallback-high-progress",
+        [{"aweme_id": "2", "author_name": "Author", "video_path": "/tmp/2.mp4"}],
+    )
+    await database.update_analysis_item_stage(
+        "fallback-high-progress",
+        "2",
+        stage="classify",
+        status="success",
+    )
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        "analysis:\n  active_run_id: active-low-progress\n",
+        encoding="utf-8",
+    )
+    config = main_module.ConfigLoader(str(config_path))
+
+    run = await main_module._resolve_active_or_best_unfinished_run(database, config)
+
+    assert run["run_id"] == "active-low-progress"
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_run_falls_back_to_best_unfinished_and_remembers_it(tmp_path):
+    database = main_module.Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    await database.create_analysis_run(
+        run_id="new-empty",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "new-empty",
+        [{"aweme_id": "1", "author_name": "Author", "video_path": "/tmp/1.mp4"}],
+    )
+    await database.create_analysis_run(
+        run_id="best-progress",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "best-progress",
+        [{"aweme_id": "2", "author_name": "Author", "video_path": "/tmp/2.mp4"}],
+    )
+    await database.update_analysis_item_stage(
+        "best-progress",
+        "2",
+        stage="classify",
+        status="success",
+    )
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("analysis:\n  active_run_id: ''\n", encoding="utf-8")
+    config = main_module.ConfigLoader(str(config_path))
+
+    run = await main_module._resolve_active_or_best_unfinished_run(database, config)
+
+    assert run["run_id"] == "best-progress"
+    written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert written["analysis"]["active_run_id"] == "best-progress"
+    await database.close()

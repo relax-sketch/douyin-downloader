@@ -181,6 +181,45 @@ async def test_get_latest_classified_run_ignores_unscored_newer_runs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_best_unfinished_run_prefers_most_classified_progress(tmp_path):
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    await database.create_analysis_run(
+        run_id="older-high-progress",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "older-high-progress",
+        [
+            {"aweme_id": "1", "author_name": "Author", "video_path": "/tmp/1.mp4"},
+            {"aweme_id": "2", "author_name": "Author", "video_path": "/tmp/2.mp4"},
+        ],
+    )
+    await database.update_analysis_item_stage(
+        "older-high-progress",
+        "1",
+        stage="classify",
+        status="success",
+    )
+    await database.create_analysis_run(
+        run_id="newer-low-progress",
+        source_type="all",
+        source_payload={"scope": "all"},
+    )
+    await database.add_analysis_items(
+        "newer-low-progress",
+        [{"aweme_id": "3", "author_name": "Author", "video_path": "/tmp/3.mp4"}],
+    )
+
+    best = await database.get_best_unfinished_run()
+
+    assert best["run_id"] == "older-high-progress"
+    assert best["classified"] == 1
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_database_initialize_sets_wal_journal_mode(tmp_path):
     db_path = tmp_path / "test.db"
     database = Database(str(db_path))

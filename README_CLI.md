@@ -38,6 +38,24 @@ python run.py -c my_config.yml -t 8 -v
 
 ---
 
+---
+
+## Web Dashboard
+
+Start the local dashboard:
+
+```bash
+python run.py -c config.yml --serve
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/
+```
+
+The dashboard supports settings display/save, `continue` / `retry` / `run_all` / `organize` / `organize_rebuild`, live stage progress, historical runs, score distributions, and bucket counts. Sensitive values such as Cookie and API Key are shown only as set/unset and are never echoed in plaintext.
+
 ## 二、分析流水线（pipeline）
 
 **前置：** 需要先下载视频到数据库。
@@ -63,84 +81,86 @@ douyin-dl pipeline <子命令> [...]
 
 ---
 
-### `pipeline run` — 一键全流程
+### `pipeline run` - create/start a new analysis run
 
 ```bash
 douyin-dl pipeline run --scope all [--limit N]
 douyin-dl pipeline run --urls-file urls.txt
 ```
 
-| 参数 | 说明 |
+| Argument | Description |
 |---|---|
-| `--scope all` | 处理数据库中所有已下载视频 |
-| `--limit N` | 限制处理数量（烟雾测试用） |
-| `--urls-file FILE` | 从文件读取 URL，先下载再分析 |
+| `--scope all` | Process all downloaded videos in the database |
+| `--limit N` | Limit the number of videos for smoke tests |
+| `--urls-file FILE` | Read URLs from a file, download them, then analyze them |
 
-示例：
+Examples:
 ```bash
-# 全量处理
+# Full processing: creates a new analysis run
 python run.py -c config.yml pipeline run --scope all
 
-# 先烟雾测试 5 条
+# Smoke test with 5 videos: also creates a new run
 python run.py -c config.yml pipeline run --scope all --limit 5
 ```
 
+Important: `pipeline run --scope all` creates and starts a new analysis run. It is not a resume command. The new run id is written to `analysis.active_run_id`, so later `continue` / `retry` commands follow that run.
+
 ---
 
-### `pipeline prepare` — 仅创建任务
+### `pipeline prepare` - create a run only
 
 ```bash
 douyin-dl pipeline prepare --scope all [--limit N]
 ```
 
-创建分析 run，把视频加入队列。不执行任何阶段。
+Creates an analysis run and queues videos. It does not execute frames/classify/export/organize.
 
 ```bash
 python run.py -c config.yml pipeline prepare --scope all --limit 5
-# 输出：Prepared run abc123...: 5 video(s)
+# Output: Prepared run abc123...: 5 video(s)
 ```
 
 ---
 
-### `pipeline continue` — 自动接续
+### `pipeline continue` - resume the active run
 
 ```bash
 douyin-dl pipeline continue
 ```
 
-自动找到最新的未完成 run（prepared / running / partial），从断点继续。**不需要记 run_id。**
+Uses `analysis.active_run_id` from `config.yml` first. If that id is empty, missing, or already completed, it falls back to the unfinished run with the most progress, prioritizing more classified items instead of the newest run.
 
 ```bash
 python run.py -c config.yml pipeline continue
-# 输出：Resuming run 4c5c9f... (180/217 classified)
+# Output: Resuming run 4c5c9f... (180/217 classified)
 ```
 
 ---
 
-### `pipeline retry` — 重试失败项
+### `pipeline retry` - retry failed items
 
 ```bash
 douyin-dl pipeline retry [--run-id <id>]
 ```
 
-重置 run 中所有失败项为 pending，保留已成功的阶段数据（不重跑九宫格），然后自动继续。不指定 `--run-id` 时自动选取最新未完成 run。
+Resets failed items in the chosen run to pending, keeps successful stage data, and resumes. Without `--run-id`, it uses `analysis.active_run_id`; if that cannot continue, it falls back to the unfinished run with the most progress.
 
 ```bash
-# 自动找最新 run 重试
+# Retry active run
 python run.py -c config.yml pipeline retry
 
-# 指定 run
+# Retry a specific run and remember it as active
 python run.py -c config.yml pipeline retry --run-id abc123...
 ```
 
-重试逻辑：级联重置
+Retry reset cascade:
 
-| 失败阶段 | 重置 |
+| Failed stage | Reset |
 |---|---|
-| frames 失败 | frames + classify + export + organize → pending |
-| classify 失败 | classify + export + organize → pending |
-| export 失败 | export + organize → pending |
-| organize 失败 | organize → pending |
+| frames failed | frames + classify + export + organize -> pending |
+| classify failed | classify + export + organize -> pending |
+| export failed | export + organize -> pending |
+| organize failed | organize -> pending |
 
 ---
 
@@ -336,6 +356,8 @@ analysis:
   enabled: true
   output_dir: ./Analysis/       # 九宫格、CSV 输出
   classified_dir: ./Classified/ # 分类后视频副本
+  active_run_id: ""             # active analysis run for continue/retry
+  organize_run_id: ""           # remembered run for organize-only copy
   prompt_file: 提示词.md         # 模型提示词模板
   batch_size: 8                 # 每批送几张九宫格
   allow_partial_batch: true     # 尾批不足时是否继续

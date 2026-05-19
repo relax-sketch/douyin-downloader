@@ -1,0 +1,104 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Douyin Pipeline Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="aurora aurora-a"></div>
+  <div class="aurora aurora-b"></div>
+  <main class="shell">
+    <header class="hero glass">
+      <div>
+        <p class="eyebrow">Douyin Downloader</p>
+        <h1>Pipeline Dashboard</h1>
+        <p class="subtle">配置、运行、进度和评分数据库都放在一个本地控制台里。</p>
+      </div>
+      <div class="hero-actions">
+        <span id="serviceStatus" class="pill">连接中</span>
+        <button id="refreshBtn" class="secondary">刷新</button>
+      </div>
+    </header>
+
+    <section class="grid two">
+      <article class="card glass">
+        <div class="card-head">
+          <div>
+            <p class="eyebrow">Overview</p>
+            <h2>当前进度</h2>
+          </div>
+          <span id="activeRunPill" class="pill muted">active run</span>
+        </div>
+        <div id="overview" class="stack"></div>
+      </article>
+
+      <article class="card glass">
+        <div class="card-head">
+          <div>
+            <p class="eyebrow">Control</p>
+            <h2>运行模式</h2>
+          </div>
+          <span id="jobStatus" class="pill muted">idle</span>
+        </div>
+        <div class="control-grid">
+          <label>动作
+            <select id="actionSelect">
+              <option value="continue">继续 active run</option>
+              <option value="retry">重试失败项</option>
+              <option value="run_all">创建新 run 并全流程</option>
+              <option value="organize">归类复制</option>
+              <option value="organize_rebuild">重建归类复制</option>
+            </select>
+          </label>
+          <label>run_id（可空）
+            <input id="runIdInput" placeholder="默认使用配置记忆" />
+          </label>
+          <label>limit（run_all 可用）
+            <input id="limitInput" type="number" min="0" value="0" />
+          </label>
+          <button id="startJobBtn" class="primary">开始运行</button>
+        </div>
+        <div id="jobDetail" class="job-detail"></div>
+      </article>
+    </section>
+
+    <section class="grid two">
+      <article class="card glass">
+        <div class="card-head">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>配置设置</h2>
+          </div>
+          <button id="saveSettingsBtn" class="secondary">保存配置</button>
+        </div>
+        <div id="settingsForm" class="settings-grid"></div>
+        <p id="settingsMessage" class="subtle"></p>
+      </article>
+
+      <article class="card glass">
+        <div class="card-head">
+          <div>
+            <p class="eyebrow">Scores</p>
+            <h2>评分可视化</h2>
+          </div>
+          <span id="scoreRunPill" class="pill muted">latest</span>
+        </div>
+        <div id="scores" class="stack"></div>
+      </article>
+    </section>
+
+    <section class="card glass">
+      <div class="card-head">
+        <div>
+          <p class="eyebrow">Database</p>
+          <h2>历史 run</h2>
+        </div>
+      </div>
+      <div id="runs" class="runs"></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

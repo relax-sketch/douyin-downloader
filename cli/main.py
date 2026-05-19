@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 from analysis import AnalysisDebugStop, AnalysisPipeline
 from auth import CookieManager
@@ -400,7 +400,7 @@ async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
         elif command == "retry":
             run_id = args.run_id
             if not run_id:
-                run = await database.get_latest_unfinished_run()
+                run = await _resolve_active_or_best_unfinished_run(database, config)
                 if not run:
                     display.print_error("No unfinished run found. Use --run-id to specify one.")
                     return
@@ -410,6 +410,7 @@ async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
                 if not run_rec:
                     display.print_error(f"Analysis run not found: {run_id}")
                     return
+                _remember_active_run(config, run_id)
             n = await database.reset_failed_analysis_items(run_id)
             display.print_info(f"Reset {n} failed item(s) in run {run_id}")
             pipeline_display = PipelineProgressDisplay()
@@ -422,7 +423,7 @@ async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
             return
 
         elif command == "continue":
-            run = await database.get_latest_unfinished_run()
+            run = await _resolve_active_or_best_unfinished_run(database, config)
             if not run:
                 display.print_info("No unfinished run found. Use 'pipeline run --scope all' to start one.")
                 return
@@ -471,16 +472,20 @@ async def _run_pipeline_subcommand(args, config: ConfigLoader) -> None:
             assert pipeline_display is not None
             pipeline_display.start_pipeline(run_id, stage_sets[command])
             if command == "frames":
+                _remember_active_run(config, run_id)
                 await pipeline.run_frames(run_id)
             elif command == "classify":
+                _remember_active_run(config, run_id)
                 await pipeline.run_classify(run_id)
             elif command == "export":
+                _remember_active_run(config, run_id)
                 csv_path = await pipeline.run_export(run_id)
                 display.print_success(f"CSV exported: {csv_path}")
             elif command == "organize":
                 _remember_organize_run(config, run_id)
                 await pipeline.run_organize(run_id, rebuild=bool(getattr(args, "rebuild", False)))
             else:
+                _remember_active_run(config, run_id)
                 await pipeline.resume(run_id)
             status = await database.refresh_analysis_run_status(run_id)
             display.print_success(f"Run {run_id} status: {status}")
@@ -499,6 +504,37 @@ def _remember_organize_run(config: ConfigLoader, run_id: str) -> None:
     analysis_cfg["organize_run_id"] = str(run_id)
     config.update(analysis=analysis_cfg)
     config.save()
+
+
+def _remember_active_run(config: ConfigLoader, run_id: str) -> None:
+    analysis_cfg = dict(config.get("analysis", {}) or {})
+    if str(analysis_cfg.get("active_run_id") or "") == str(run_id):
+        return
+    analysis_cfg["active_run_id"] = str(run_id)
+    config.update(analysis=analysis_cfg)
+    config.save()
+
+
+async def _resolve_active_or_best_unfinished_run(
+    database: Database,
+    config: ConfigLoader,
+) -> Optional[Dict[str, Any]]:
+    analysis_cfg = config.get("analysis", {}) or {}
+    active_run_id = str(analysis_cfg.get("active_run_id") or "").strip()
+    if active_run_id:
+        run = await database.get_analysis_run(active_run_id)
+        if run and run.get("status") in {"prepared", "running", "partial"}:
+            display.print_info(f"Using active analysis run {active_run_id}")
+            return run
+        reason = "not found" if not run else f"status={run.get('status')}"
+        display.print_warning(
+            f"Configured analysis.active_run_id cannot continue ({reason}); selecting best unfinished run."
+        )
+
+    run = await database.get_best_unfinished_run()
+    if run:
+        _remember_active_run(config, str(run["run_id"]))
+    return run
 
 
 async def _pipeline_run(
@@ -539,6 +575,7 @@ async def _pipeline_run(
         return
 
     display.print_info(f"Prepared run {run_id}: {count} video(s)")
+    _remember_active_run(config, run_id)
     if pipeline.progress_reporter:
         pipeline.progress_reporter.start_pipeline(
             run_id,
@@ -630,9 +667,13 @@ def main():
             )
 
     pipeline_list = pipeline_subparsers.add_parser("list", help="List analysis runs")
-    pipeline_continue = pipeline_subparsers.add_parser("continue", help="Auto-resume the latest unfinished run")
+    pipeline_continue = pipeline_subparsers.add_parser("continue", help="Resume analysis.active_run_id, then best unfinished run")
     pipeline_retry = pipeline_subparsers.add_parser("retry", help="Retry failed items then resume")
-    pipeline_retry.add_argument("--run-id", default=None, help="Analysis run id (default: latest unfinished)")
+    pipeline_retry.add_argument(
+        "--run-id",
+        default=None,
+        help="Analysis run id (default: analysis.active_run_id, then best unfinished run)",
+    )
     try:
         from __init__ import __version__
     except ImportError:

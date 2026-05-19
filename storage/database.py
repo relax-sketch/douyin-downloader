@@ -518,9 +518,14 @@ class Database:
         db = await self._get_conn()
         cursor = await db.execute(
             """
-            SELECT run_id, source_type, source_payload, status, csv_path, created_at, updated_at
-            FROM analysis_run
-            WHERE run_id = ?
+            SELECT r.run_id, r.source_type, r.source_payload, r.status, r.csv_path, r.created_at, r.updated_at,
+                   COUNT(i.id) AS item_count,
+                   SUM(CASE WHEN i.frames_status = 'success' THEN 1 ELSE 0 END) AS framed,
+                   SUM(CASE WHEN i.classify_status = 'success' THEN 1 ELSE 0 END) AS classified
+            FROM analysis_run r
+            LEFT JOIN analysis_item i ON i.run_id = r.run_id
+            WHERE r.run_id = ?
+            GROUP BY r.run_id
             """,
             (run_id,),
         )
@@ -539,6 +544,9 @@ class Database:
             "csv_path": row[4],
             "created_at": row[5],
             "updated_at": row[6],
+            "item_count": int(row[7] or 0),
+            "framed": int(row[8] or 0),
+            "classified": int(row[9] or 0),
         }
 
     async def list_analysis_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -570,6 +578,215 @@ class Database:
             }
             for row in rows
         ]
+
+    async def list_analysis_runs_detailed(self, limit: int = 20) -> List[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT r.run_id, r.source_type, r.status, r.csv_path, r.created_at, r.updated_at,
+                   COUNT(i.id) AS item_count,
+                   SUM(CASE WHEN i.frames_status = 'success' THEN 1 ELSE 0 END) AS framed,
+                   SUM(CASE WHEN i.classify_status = 'success' THEN 1 ELSE 0 END) AS classified,
+                   SUM(CASE WHEN i.export_status = 'success' THEN 1 ELSE 0 END) AS exported,
+                   SUM(CASE WHEN i.organize_status IN ('success', 'skipped') THEN 1 ELSE 0 END)
+                       AS organized,
+                   SUM(CASE WHEN i.frames_status = 'failed'
+                             OR i.classify_status = 'failed'
+                             OR i.export_status = 'failed'
+                             OR i.organize_status = 'failed'
+                            THEN 1 ELSE 0 END) AS failed
+            FROM analysis_run r
+            LEFT JOIN analysis_item i ON i.run_id = r.run_id
+            GROUP BY r.run_id
+            ORDER BY r.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "source_type": row[1],
+                "status": row[2],
+                "csv_path": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+                "item_count": int(row[6] or 0),
+                "framed": int(row[7] or 0),
+                "classified": int(row[8] or 0),
+                "exported": int(row[9] or 0),
+                "organized": int(row[10] or 0),
+                "failed": int(row[11] or 0),
+            }
+            for row in rows
+        ]
+
+    async def get_analysis_run_dashboard(self, run_id: str) -> Optional[Dict[str, Any]]:
+        run = await self.get_analysis_run(run_id)
+        if not run:
+            return None
+
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN frames_status = 'pending' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN frames_status = 'success' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN frames_status = 'failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN classify_status = 'pending' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN classify_status = 'success' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN classify_status = 'failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN export_status = 'pending' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN export_status = 'success' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN export_status = 'failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN organize_status = 'pending' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN organize_status = 'success' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN organize_status = 'skipped' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN organize_status = 'failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN error_stage IS NOT NULL THEN 1 ELSE 0 END),
+                SUM(retry_count)
+            FROM analysis_item
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            row = [0] * 16
+
+        failures_cursor = await db.execute(
+            """
+            SELECT aweme_id, author_name, error_stage, error_message, retry_count, updated_at
+            FROM analysis_item
+            WHERE run_id = ? AND error_stage IS NOT NULL
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 20
+            """,
+            (run_id,),
+        )
+        failures = await failures_cursor.fetchall()
+        run["stages"] = {
+            "frames": {
+                "pending": int(row[1] or 0),
+                "success": int(row[2] or 0),
+                "failed": int(row[3] or 0),
+            },
+            "classify": {
+                "pending": int(row[4] or 0),
+                "success": int(row[5] or 0),
+                "failed": int(row[6] or 0),
+            },
+            "export": {
+                "pending": int(row[7] or 0),
+                "success": int(row[8] or 0),
+                "failed": int(row[9] or 0),
+            },
+            "organize": {
+                "pending": int(row[10] or 0),
+                "success": int(row[11] or 0),
+                "skipped": int(row[12] or 0),
+                "failed": int(row[13] or 0),
+            },
+        }
+        run["failed"] = int(row[14] or 0)
+        run["retry_count"] = int(row[15] or 0)
+        run["failures"] = [
+            {
+                "aweme_id": failure[0],
+                "author_name": failure[1],
+                "error_stage": failure[2],
+                "error_message": failure[3],
+                "retry_count": int(failure[4] or 0),
+                "updated_at": failure[5],
+            }
+            for failure in failures
+        ]
+        return run
+
+    async def get_analysis_score_dashboard(
+        self,
+        run_id: str,
+        *,
+        primary_attribute: str,
+        buckets: List[Dict[str, Any]],
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        db = await self._get_conn()
+
+        dist_cursor = await db.execute(
+            """
+            SELECT attribute_key, score, COUNT(*)
+            FROM analysis_score
+            WHERE run_id = ?
+            GROUP BY attribute_key, score
+            ORDER BY attribute_key ASC, score ASC
+            """,
+            (run_id,),
+        )
+        distributions: Dict[str, Dict[str, int]] = {}
+        for attribute_key, score, count in await dist_cursor.fetchall():
+            distributions.setdefault(str(attribute_key), {})[str(int(score))] = int(count or 0)
+
+        bucket_counts = []
+        for bucket in buckets:
+            label = str(bucket.get("label") or "")
+            min_score = int(bucket.get("min_score", 0))
+            max_score = int(bucket.get("max_score", 10))
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*)
+                FROM analysis_score
+                WHERE run_id = ? AND attribute_key = ? AND score BETWEEN ? AND ?
+                """,
+                (run_id, primary_attribute, min_score, max_score),
+            )
+            row = await cursor.fetchone()
+            bucket_counts.append(
+                {
+                    "label": label,
+                    "min_score": min_score,
+                    "max_score": max_score,
+                    "count": int((row or [0])[0] or 0),
+                }
+            )
+
+        top_cursor = await db.execute(
+            """
+            SELECT i.aweme_id, i.author_name, i.video_path, s.score
+            FROM analysis_score s
+            JOIN analysis_item i
+              ON i.run_id = s.run_id AND i.aweme_id = s.aweme_id
+            WHERE s.run_id = ? AND s.attribute_key = ?
+            ORDER BY s.score DESC, i.id ASC
+            LIMIT ?
+            """,
+            (run_id, primary_attribute, int(limit or 20)),
+        )
+        top_items = [
+            {
+                "aweme_id": row[0],
+                "author_name": row[1],
+                "video_path": row[2],
+                "score": int(row[3]),
+            }
+            for row in await top_cursor.fetchall()
+        ]
+
+        total_cursor = await db.execute(
+            "SELECT COUNT(DISTINCT aweme_id) FROM analysis_score WHERE run_id = ?",
+            (run_id,),
+        )
+        total_row = await total_cursor.fetchone()
+        return {
+            "run_id": run_id,
+            "primary_attribute": primary_attribute,
+            "scored_items": int((total_row or [0])[0] or 0),
+            "distributions": distributions,
+            "buckets": bucket_counts,
+            "top_items": top_items,
+        }
 
     async def reset_failed_analysis_items(self, run_id: str) -> int:
         """Reset all failed items so they can be retried. Cascades: a frames
@@ -654,6 +871,37 @@ class Database:
             "updated_at": row[5],
             "item_count": row[6],
             "classified": row[7],
+        }
+
+    async def get_best_unfinished_run(self) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT run_id, source_type, status, csv_path, created_at, updated_at,
+                   (SELECT COUNT(*) FROM analysis_item WHERE run_id = r.run_id) AS item_count,
+                   (SELECT COUNT(*) FROM analysis_item
+                    WHERE run_id = r.run_id AND frames_status = 'success') AS framed,
+                   (SELECT COUNT(*) FROM analysis_item
+                    WHERE run_id = r.run_id AND classify_status = 'success') AS classified
+            FROM analysis_run r
+            WHERE status IN ('prepared', 'running', 'partial')
+            ORDER BY classified DESC, framed DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+            """
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row[0],
+            "source_type": row[1],
+            "status": row[2],
+            "csv_path": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+            "item_count": row[6],
+            "framed": row[7],
+            "classified": row[8],
         }
 
     async def get_latest_classified_run(self) -> Optional[Dict[str, Any]]:
