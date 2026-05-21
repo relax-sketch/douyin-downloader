@@ -61,7 +61,8 @@ function renderSettings(payload) {
     ['analysis.frame_count','抽帧数',a.frame_count], ['analysis.grid_rows','网格行',a.grid_rows],
     ['analysis.grid_cols','网格列',a.grid_cols], ['analysis.provider.model','模型',p.model || ''],
     ['analysis.provider.base_url','Base URL',p.base_url || ''], ['analysis.provider.timeout','超时',p.timeout],
-    ['analysis.provider.rate_limit','模型限速',p.rate_limit], ['analysis.provider.retry_times','模型重试',p.retry_times],
+    ['analysis.provider.rate_limit','模型限速',p.rate_limit], ['analysis.provider.concurrency','模型并发',p.concurrency || 1],
+    ['analysis.provider.retry_times','模型重试',p.retry_times],
   ];
   $('settingsForm').innerHTML = fields.map(([key,label,value]) => `
     <label title="${payload.fields[key] || ''}">${label}<input data-key="${key}" value="${value ?? ''}" /></label>
@@ -83,7 +84,7 @@ function collectSettingsPatch() {
     let value = el.value;
     if (value === 'true') value = true;
     else if (value === 'false') value = false;
-    else if (['thread','retry_times','analysis.batch_size','analysis.frame_count','analysis.grid_rows','analysis.grid_cols','analysis.provider.timeout','analysis.provider.rate_limit','analysis.provider.retry_times'].includes(key)) value = Number(value || 0);
+    else if (['thread','retry_times','analysis.batch_size','analysis.frame_count','analysis.grid_rows','analysis.grid_cols','analysis.provider.timeout','analysis.provider.rate_limit','analysis.provider.concurrency','analysis.provider.retry_times'].includes(key)) value = Number(value || 0);
     else if (key === 'analysis.buckets') value = JSON.parse(value || '[]');
     else if (key === 'link') value = value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (key.startsWith('analysis.provider.')) patch.analysis.provider[key.replace('analysis.provider.','')] = value;

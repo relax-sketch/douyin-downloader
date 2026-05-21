@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,27 @@ class _FakeBatchProvider:
             }
             for index, video_id in enumerate(video_ids)
         ]
+
+
+class _ConcurrentBatchProvider(_FakeBatchProvider):
+    def __init__(self):
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+
+    async def _batch_score_once(self, image_paths, video_ids, prompt, compress_level=0):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.7)
+            return await super()._batch_score_once(
+                image_paths,
+                video_ids,
+                prompt,
+                compress_level=compress_level,
+            )
+        finally:
+            self.active -= 1
 
 
 class _RetryingBatchProvider:
@@ -302,6 +324,82 @@ async def test_pipeline_batch_mode_uses_five_video_prompt_contract(tmp_path):
     rows = await database.get_analysis_export_rows(run_id)
     assert len(rows) == 5
     assert sorted(row["scores"]["suggestiveness_score"] for row in rows) == [1, 2, 3, 4, 5]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_batch_mode_honors_provider_concurrency(tmp_path):
+    downloads_root = tmp_path / "Downloaded"
+    config = ConfigLoader()
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("ids={video_id_1},{video_id_2}", encoding="utf-8")
+    analysis_cfg = {
+        **config.get("analysis"),
+        "output_dir": str(tmp_path / "Analysis"),
+        "classified_dir": str(tmp_path / "Classified"),
+        "prompt_file": str(prompt_file),
+        "batch_size": 2,
+        "allow_partial_batch": True,
+        "provider": {
+            **config.get("analysis")["provider"],
+            "concurrency": 2,
+        },
+        "attributes": [
+            {
+                "key": "suggestiveness_score",
+                "label": "性暗示程度",
+                "description": "desc",
+                "min_score": 1,
+                "max_score": 10,
+            },
+            {
+                "key": "coverage_score",
+                "label": "覆盖程度",
+                "description": "desc",
+                "min_score": 1,
+                "max_score": 10,
+            },
+        ],
+        "primary_attribute": "suggestiveness_score",
+    }
+    config.update(path=str(downloads_root), analysis=analysis_cfg)
+
+    database = Database(str(tmp_path / "test.db"))
+    await database.initialize()
+    for index in range(4):
+        video_dir = downloads_root / "author" / "post" / f"demo-{index}"
+        video_dir.mkdir(parents=True)
+        (video_dir / f"demo-{index}.mp4").write_bytes(b"video")
+        await database.add_aweme(
+            {
+                "aweme_id": str(index),
+                "aweme_type": "video",
+                "title": f"demo-{index}",
+                "author_id": "author",
+                "author_name": "Author",
+                "create_time": 1700000000 + index,
+                "file_path": str(video_dir),
+                "metadata": "{}",
+            }
+        )
+
+    provider = _ConcurrentBatchProvider()
+    pipeline = AnalysisPipeline(
+        raw_config=config.config,
+        database=database,
+        file_manager=FileManager(str(downloads_root)),
+        provider=provider,
+        frame_extractor=_FakeFrameExtractor(),
+        grid_builder=_FakeGridBuilder(),
+    )
+    run_id = await pipeline.create_run(source_type="all", source_payload={"scope": "all"})
+    assert await pipeline.prepare_from_all_videos(run_id=run_id) == 4
+    await pipeline.run_frames(run_id)
+    await pipeline.run_classify(run_id)
+
+    rows = await database.get_analysis_export_rows(run_id)
+    assert len(rows) == 4
+    assert provider.max_active == 2
     await database.close()
 
 

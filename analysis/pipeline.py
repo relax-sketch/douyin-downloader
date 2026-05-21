@@ -1,4 +1,5 @@
 import uuid
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Protocol
 
@@ -99,6 +100,16 @@ class AnalysisPipeline:
         self.allow_partial_batch = bool(self.cfg.get("allow_partial_batch", False))
         provider_cfg = self.cfg.get("provider") or {}
         self.debug_stop_on_api_error = bool(provider_cfg.get("debug_stop_on_api_error", False))
+        self.provider_concurrency = max(
+            1,
+            int(
+                provider_cfg.get(
+                    "concurrency",
+                    provider_cfg.get("max_concurrency", 1),
+                )
+                or 1
+            ),
+        )
         self.frame_count = max(1, int(self.cfg.get("frame_count") or 9))
         self.grid_rows = max(1, int(self.cfg.get("grid_rows") or 3))
         self.grid_cols = max(1, int(self.cfg.get("grid_cols") or 3))
@@ -181,44 +192,52 @@ class AnalysisPipeline:
         if self.batch_size <= 1:
             if self.progress_reporter:
                 self.progress_reporter.start_stage("classify", len(items))
-            for item in items:
+
+            semaphore = asyncio.Semaphore(self.provider_concurrency)
+
+            async def classify_one(item: Dict[str, object], item_index: int) -> None:
                 aweme_id = item["aweme_id"]
-                try:
-                    if self.progress_reporter:
-                        self.progress_reporter.update_stage_detail("classify", str(aweme_id))
-                    scores = await self.provider.score(
-                        Path(item["grid_path"]),
-                        self.attributes,
-                        self.prompt,
-                    )
-                    await self.database.upsert_analysis_scores(run_id, aweme_id, scores)
-                    await self.database.update_analysis_item_stage(
-                        run_id,
-                        aweme_id,
-                        stage="classify",
-                        status="success",
-                    )
-                    if self.progress_reporter:
-                        self.progress_reporter.advance_stage_item("classify", "success", str(aweme_id))
-                except Exception as exc:
-                    self._raise_debug_stop_if_needed(
-                        exc,
-                        image_paths=[Path(item["grid_path"])],
-                        video_ids=[str(aweme_id)],
-                        batch_index=1,
-                        total_batches=len(items),
-                        compress_level=0,
-                    )
-                    logger.warning("Classification failed for %s: %s", aweme_id, exc)
-                    await self.database.update_analysis_item_stage(
-                        run_id,
-                        aweme_id,
-                        stage="classify",
-                        status="failed",
-                        error_message=str(exc),
-                    )
-                    if self.progress_reporter:
-                        self.progress_reporter.advance_stage_item("classify", "failed", str(aweme_id))
+                async with semaphore:
+                    try:
+                        if self.progress_reporter:
+                            self.progress_reporter.update_stage_detail("classify", str(aweme_id))
+                        scores = await self.provider.score(
+                            Path(item["grid_path"]),
+                            self.attributes,
+                            self.prompt,
+                        )
+                        await self.database.upsert_analysis_scores(run_id, aweme_id, scores)
+                        await self.database.update_analysis_item_stage(
+                            run_id,
+                            aweme_id,
+                            stage="classify",
+                            status="success",
+                        )
+                        if self.progress_reporter:
+                            self.progress_reporter.advance_stage_item("classify", "success", str(aweme_id))
+                    except Exception as exc:
+                        self._raise_debug_stop_if_needed(
+                            exc,
+                            image_paths=[Path(item["grid_path"])],
+                            video_ids=[str(aweme_id)],
+                            batch_index=item_index,
+                            total_batches=len(items),
+                            compress_level=0,
+                        )
+                        logger.warning("Classification failed for %s: %s", aweme_id, exc)
+                        await self.database.update_analysis_item_stage(
+                            run_id,
+                            aweme_id,
+                            stage="classify",
+                            status="failed",
+                            error_message=str(exc),
+                        )
+                        if self.progress_reporter:
+                            self.progress_reporter.advance_stage_item("classify", "failed", str(aweme_id))
+
+            await asyncio.gather(
+                *(classify_one(item, index + 1) for index, item in enumerate(items))
+            )
             if self.progress_reporter:
                 self.progress_reporter.finish_stage("classify")
             return
@@ -250,9 +269,10 @@ class AnalysisPipeline:
             if processable_items
             else 0
         )
-        for start in range(0, len(processable_items), self.batch_size):
-            batch = processable_items[start : start + self.batch_size]
-            batch_index = (start // self.batch_size) + 1
+        async def classify_batch_with_timing(
+            batch: List[Dict[str, object]],
+            batch_index: int,
+        ) -> None:
             if self.progress_reporter:
                 self.progress_reporter.start_batch_timer("classify")
             await self._classify_batch(
@@ -262,12 +282,28 @@ class AnalysisPipeline:
                 total_batches=total_batches,
             )
             if self.progress_reporter:
-                batch_time = self.progress_reporter.record_batch_time("classify")
+                self.progress_reporter.record_batch_time("classify")
                 avg = self.progress_reporter.avg_batch_time("classify")
                 self.progress_reporter.update_stage_detail(
                     "classify",
                     f"批次 {batch_index}/{total_batches}  avg {avg:.0f}s/batch",
                 )
+
+        semaphore = asyncio.Semaphore(self.provider_concurrency)
+
+        async def run_batch(
+            batch: List[Dict[str, object]],
+            batch_index: int,
+        ) -> None:
+            async with semaphore:
+                await classify_batch_with_timing(batch, batch_index)
+
+        batch_tasks = []
+        for start in range(0, len(processable_items), self.batch_size):
+            batch = processable_items[start : start + self.batch_size]
+            batch_index = (start // self.batch_size) + 1
+            batch_tasks.append(run_batch(batch, batch_index))
+        await asyncio.gather(*batch_tasks)
         if self.progress_reporter:
             detail = (
                 f"完成，剩余 {pending_remainder} 条等待凑满批次"

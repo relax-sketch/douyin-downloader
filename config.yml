@@ -48,7 +48,7 @@ analysis:
   enabled: true
   output_dir: ./Analysis/
   classified_dir: ./Classified/
-  active_run_id: ee4ffaf8eb02436ab56f79b3f406bfcb
+  active_run_id: 6cb3481f9a384580af3deefc1a1aaa55
   organize_run_id: ''
   prompt_file: 提示词.md
   batch_size: 9
@@ -77,7 +77,8 @@ analysis:
     api_key_env: OPENAI_API_KEY
     api_key: sk-JkqZoYVSSCQWrsHFRfc3D4TNFmYtUyKVrblRYmARvomsOfn1
     timeout: 120
-    rate_limit: 1
+    rate_limit: 3
+    concurrency: 3
     retry_times: 3
     debug_stop_on_api_error: false
     image_preprocess:
@@ -138,7 +139,7 @@ server:
   max_jobs: 500
   job_ttl_seconds: 86400
 link:
-- https://v.douyin.com/O_-kJK_fVM4/
+- https://v.douyin.com/RXK3jluJoUU/
 cookies:
   __ac_nonce: 06a0aad0900e6a1c7e26a
   __ac_signature: _02B4Z6wo00f01ObO61wAAIDAaIOdaVZP0Zzm7s.AAFO-7d

@@ -112,6 +112,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "api_key": "",
             "timeout": 120,
             "rate_limit": 1,
+            "concurrency": 1,
             "retry_times": 3,
             "debug_stop_on_api_error": False,
             "image_preprocess": {

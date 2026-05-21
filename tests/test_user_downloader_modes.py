@@ -283,6 +283,71 @@ def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
     asyncio.run(database.close())
 
 
+def test_user_downloader_backfills_db_for_existing_local_files(tmp_path, monkeypatch):
+    """If a previous batch was interrupted after files landed on disk but
+    before the batched DB insert committed, a rerun should repair the DB rows
+    instead of skipping them forever."""
+    from storage.database import Database
+
+    db_path = tmp_path / "test.db"
+    database = Database(str(db_path))
+    asyncio.run(database.initialize())
+
+    config_data = {
+        "number": {"post": 0, "like": 0, "mix": 0, "music": 0},
+        "increase": {"post": False, "like": False, "mix": False, "music": False},
+        "mode": ["post"],
+        "thread": 2,
+        "browser_fallback": {"enabled": False},
+    }
+    config = _FakeConfig(config_data)
+    file_manager = FileManager(str(tmp_path / "Downloaded"))
+    downloader = UserDownloader(
+        config=config,
+        api_client=_FakeAPIClient(),
+        file_manager=file_manager,
+        cookie_manager=_FakeCookieManager(),
+        database=database,
+        rate_limiter=_NoopRateLimiter(),
+        retry_handler=None,
+        queue_manager=QueueManager(max_workers=2),
+    )
+
+    aweme_ids = ("7560651601805200700", "7561746528982043961")
+
+    async def _existing_posts(_sec_uid: str, max_cursor: int = 0, count: int = 20):
+        if max_cursor > 0:
+            return {"items": [], "has_more": False, "max_cursor": max_cursor, "status_code": 0}
+        return {
+            "items": [_make_aweme(aweme_id) for aweme_id in aweme_ids],
+            "has_more": False,
+            "max_cursor": 0,
+            "status_code": 0,
+        }
+
+    monkeypatch.setattr(downloader.api_client, "get_user_post", _existing_posts)
+
+    for aweme_id in aweme_ids:
+        save_dir = file_manager.base_path / "tester" / "post" / f"existing_{aweme_id}"
+        save_dir.mkdir(parents=True)
+        (save_dir / f"video_{aweme_id}.mp4").write_bytes(b"already downloaded")
+
+    async def _should_not_download(*_args, **_kwargs):
+        raise AssertionError("existing local files should be skipped, not downloaded again")
+
+    monkeypatch.setattr(downloader, "_download_aweme_assets", _should_not_download)
+
+    result = asyncio.run(downloader.download({"sec_uid": "sec_uid_x"}))
+
+    assert result.total == 2
+    assert result.success == 0
+    assert result.skipped == 2
+    assert asyncio.run(database.is_downloaded(aweme_ids[0])) is True
+    assert asyncio.run(database.is_downloaded(aweme_ids[1])) is True
+
+    asyncio.run(database.close())
+
+
 def test_user_downloader_rejects_mixed_self_collect_and_regular_modes(tmp_path, monkeypatch):
     downloader = _build_downloader(tmp_path, mode=["collect", "post"])
 

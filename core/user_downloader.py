@@ -171,6 +171,9 @@ class UserDownloader(BaseDownloader):
         async def _process_aweme(item: Dict[str, Any]):
             aweme_id = item.get("aweme_id")
             if not await self._should_download(str(aweme_id or "")):
+                await self._backfill_local_aweme_record(
+                    item, author_name, db_batch=db_batch
+                )
                 self._progress_advance_item("skipped", str(aweme_id or "unknown"))
                 return {"status": "skipped", "aweme_id": aweme_id}
 

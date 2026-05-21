@@ -117,6 +117,7 @@ analysis:
     api_key: ""
     timeout: 120
     rate_limit: 1
+    concurrency: 1            # 同时并发的模型 API 请求数；需要服务端支持时再调高
     retry_times: 3
     debug_stop_on_api_error: false # true = 任一模型 API 报错时立刻停下并打印请求/图片诊断
     image_preprocess:

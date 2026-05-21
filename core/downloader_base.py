@@ -211,6 +211,99 @@ class BaseDownloader(ABC):
             self._local_aweme_ids = set()
         self._local_aweme_ids.add(aweme_id)
 
+    def _find_local_aweme_save_dir(self, aweme_id: str) -> Optional[Path]:
+        """Return the local media directory for an aweme already on disk.
+
+        This is intentionally filesystem-based rather than DB-based.  If a
+        previous download was interrupted after files were written but before
+        the batched DB insert committed, rerunning the user download will hit
+        the "already exists locally" branch.  We still need the save directory
+        to backfill the missing database row so later pipeline analysis can
+        discover the video.
+        """
+        if not aweme_id:
+            return None
+
+        base_path = self.file_manager.base_path
+        if not base_path.exists():
+            return None
+
+        matches: List[Path] = []
+        for path in base_path.rglob(f"*{aweme_id}*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in self._local_media_suffixes:
+                continue
+            try:
+                if path.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+            matches.append(path)
+
+        if not matches:
+            return None
+
+        # Prefer the actual video file because analysis discovers MP4s from
+        # the stored directory.  Fall back to any media asset for galleries.
+        matches.sort(key=lambda p: (0 if p.suffix.lower() == ".mp4" else 1, str(p)))
+        return matches[0].parent
+
+    def _build_aweme_db_record(
+        self,
+        aweme_data: Dict[str, Any],
+        author_name: str,
+        save_dir: Path,
+    ) -> Dict[str, Any]:
+        author = aweme_data.get("author", {}) or {}
+        return {
+            "aweme_id": aweme_data.get("aweme_id"),
+            "aweme_type": self._detect_media_type(aweme_data),
+            "title": (aweme_data.get("desc", "no_title") or "").strip() or "no_title",
+            "author_id": author.get("uid"),
+            "author_name": author.get("nickname", author_name),
+            "create_time": aweme_data.get("create_time"),
+            "file_path": str(save_dir),
+            "metadata": json.dumps(aweme_data, ensure_ascii=False),
+            "author_sec_uid": extract_author_sec_uid(aweme_data),
+        }
+
+    async def _backfill_local_aweme_record(
+        self,
+        aweme_data: Dict[str, Any],
+        author_name: str,
+        *,
+        db_batch: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        """Write a DB row for a locally existing aweme when DB state is missing.
+
+        Returns True when a record was queued/written.  This repairs interrupted
+        batch downloads where media files and the manifest exist, but the final
+        database transaction never happened.
+        """
+        if not self.database:
+            return False
+
+        aweme_id = str(aweme_data.get("aweme_id") or "").strip()
+        if not aweme_id:
+            return False
+
+        if await self.database.is_downloaded(aweme_id):
+            return False
+
+        save_dir = self._find_local_aweme_save_dir(aweme_id)
+        if save_dir is None:
+            return False
+
+        record = self._build_aweme_db_record(aweme_data, author_name, save_dir)
+        if db_batch is not None:
+            db_batch.append(record)
+        else:
+            await self.database.add_aweme(record)
+        self._mark_local_aweme_downloaded(aweme_id)
+        logger.info("Backfilled database record for locally existing aweme %s", aweme_id)
+        return True
+
     def _filter_by_time(self, aweme_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         start_time = self.config.get("start_time")
         end_time = self.config.get("end_time")
@@ -403,8 +496,8 @@ class BaseDownloader(ABC):
             logger.error("Unsupported media type for aweme %s: %s", aweme_id, media_type)
             return False
 
+        author = aweme_data.get("author", {}) or {}
         if self.config.get("avatar"):
-            author = aweme_data.get("author", {})
             avatar_url = self._extract_first_url(author.get("avatar_larger"))
             if avatar_url:
                 avatar_path = save_dir / f"{file_stem}_avatar.jpg"
@@ -438,24 +531,8 @@ class BaseDownloader(ABC):
             if saved is not None:
                 downloaded_files.append(comments_path)
 
-        author = aweme_data.get("author", {})
         if self.database:
-            metadata_json = json.dumps(aweme_data, ensure_ascii=False)
-            record = {
-                "aweme_id": aweme_id,
-                "aweme_type": media_type,
-                "title": desc,
-                "author_id": author.get("uid"),
-                "author_name": author.get("nickname", author_name),
-                "create_time": aweme_data.get("create_time"),
-                "file_path": str(save_dir),
-                "metadata": metadata_json,
-                # Attach sec_uid onto the payload so both the batched path
-                # (add_aweme_batch iterates `record["author_sec_uid"]`) and
-                # the single-write path (add_aweme reads the payload as
-                # fallback when the kwarg is None) pick it up identically.
-                "author_sec_uid": extract_author_sec_uid(aweme_data),
-            }
+            record = self._build_aweme_db_record(aweme_data, author_name, save_dir)
             # Caller may opt into batched DB writes by passing a list; we just
             # accumulate the record and let the caller commit them all at once.
             if db_batch is not None:

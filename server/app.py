@@ -361,6 +361,7 @@ def _settings_fields() -> Dict[str, str]:
         "analysis.provider.base_url": "OpenAI-compatible API Base URL",
         "analysis.provider.timeout": "模型请求超时秒数",
         "analysis.provider.rate_limit": "模型请求限速",
+        "analysis.provider.concurrency": "模型 API 并发请求数",
         "analysis.provider.retry_times": "模型判分重试次数",
         "analysis.provider.debug_stop_on_api_error": "API 报错时立即停止并输出诊断",
         "analysis.buckets": "CSV/评分展示分桶",
@@ -411,6 +412,7 @@ def _apply_settings_patch(config: ConfigLoader, incoming: Dict[str, Any]) -> Non
             "api_key_env",
             "timeout",
             "rate_limit",
+            "concurrency",
             "retry_times",
             "debug_stop_on_api_error",
         }

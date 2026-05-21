@@ -380,6 +380,7 @@ analysis:
     model: gemini-3-flash-preview-cli
     timeout: 120
     rate_limit: 1
+    concurrency: 1              # 同时并发的模型 API 请求数；当前 config.yml 可设为 2
     retry_times: 3
     image_preprocess:           # 发送前压缩
       enabled: true
